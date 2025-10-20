@@ -147,28 +147,26 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     </div>
 
     <!-- Bottom send bar -->
-<!-- Bottom send bar -->
-<div id="sendbar">
-  <label class="label" for="tx_id">ID</label>
-  <input id="tx_id" list="idHistory" placeholder="0x123 or 123" spellcheck="false">
-  <datalist id="idHistory"></datalist>
+    <div id="sendbar">
+      <label class="label" for="tx_id">ID</label>
+      <input id="tx_id" list="idHistory" placeholder="0x123 or 123" spellcheck="false">
+      <datalist id="idHistory"></datalist>
 
-  <div id="tx_opts">
-    <label><input type="checkbox" id="tx_ext"> EXT</label>
-    <label><input type="checkbox" id="tx_rtr"> RTR</label>
-  </div>
+      <div id="tx_opts">
+        <label><input type="checkbox" id="tx_ext"> EXT</label>
+        <label><input type="checkbox" id="tx_rtr"> RTR</label>
+      </div>
 
-  <label class="label" for="tx_data">Data</label>
-  <input id="tx_data" list="dataHistory" placeholder="03 22 01 05 00 00 00 00" spellcheck="false">
-  <datalist id="dataHistory"></datalist>
+      <label class="label" for="tx_data">Data</label>
+      <input id="tx_data" list="dataHistory" placeholder="03 22 01 05 00 00 00 00" spellcheck="false">
+      <datalist id="dataHistory"></datalist>
 
-  <div id="dlc_badge">DLC: 0</div>
-  <button id="tx_send" disabled>Send</button>
-  <button id="historyBtn" title="Insert last sent">⟳</button>
+      <div id="dlc_badge">DLC: 0</div>
+      <button id="tx_send" disabled>Send</button>
+      <button id="historyBtn" title="Insert last sent">⟳</button>
 
-  <button id="openHistoryBtn" title="Open history modal">History</button>
-
-</div>
+      <button id="openHistoryBtn" title="Open history modal">History</button>
+    </div>
 
   </main>
 </div>
@@ -274,17 +272,24 @@ const saveSta = document.getElementById('saveSta');
 const netBadge = document.getElementById('netBadge');
 const toast = document.getElementById('toast');
 
+// ===== Performance limits (tune as needed) =====
+const MAX_DOM_ROWS         = 1500;
+const MAX_PENDING_LINES    = 10000;
+const MAX_PROCESS_PER_TICK = 1200;
+const BATCH_FLUSH_MS       = 16;
+const SCROLL_SNAPPING_PX   = 16;
+
+let wsBuf = '';
+let flushTimer = 0;
+let nearBottomCached = true;
 
 // ===== Sent frames cache (localStorage by default) =====
-// Set to true to keep only for this tab/session:
-const USE_SESSION = false; // change to true if you want session-only
-
+const USE_SESSION = false; // set true to keep only in this tab
 const store = USE_SESSION ? sessionStorage : localStorage;
-const LS_KEY_SENDS = 'webcan_sends_v1';        // persistent list (MRU)
-const MAX_SAVED = 100;                          // cap
+const LS_KEY_SENDS = 'webcan_sends_v1';
+const MAX_SAVED = 100;
 
 let sends = []; // Array<{id, ext, rtr, data, dlc, ts}>
-
 const idHistory = document.getElementById('idHistory');
 const dataHistory = document.getElementById('dataHistory');
 const historyBtn = document.getElementById('historyBtn');
@@ -332,9 +337,6 @@ function rememberSend(entry){
   refreshDatalists();
 }
 
-
-
-
 // Quick insert: put last sent back into the inputs
 historyBtn.addEventListener('click', ()=>{
   if (!sends.length) return;
@@ -356,8 +358,6 @@ const historyTBody     = document.getElementById('historyTBody');
 const histCount        = document.getElementById('histCount');
 const histSearch       = document.getElementById('histSearch');
 
-// Reuse store/sends/saveSends/rememberSend from cache block
-// Helper: pretty time
 function fmtTs(ts){
   try {
     const d = new Date(ts);
@@ -365,8 +365,6 @@ function fmtTs(ts){
     return d.toLocaleTimeString([], {hour12:false}) + '.' + ms;
   } catch { return String(ts); }
 }
-
-// Render table rows (with filter)
 function renderHistory(filter=''){
   const q = (filter||'').trim().toUpperCase();
   historyTBody.innerHTML = '';
@@ -384,7 +382,6 @@ function renderHistory(filter=''){
     if (q && !hay.includes(q)) continue;
 
     const tr = document.createElement('tr');
-
     tr.innerHTML = `
       <td style="padding:8px; border-bottom:1px solid #0f172a">${fmtTs(s.ts||0)}</td>
       <td style="padding:8px; border-bottom:1px solid #0f172a; font-weight:700">${id}</td>
@@ -403,18 +400,12 @@ function renderHistory(filter=''){
   }
   histCount.textContent = `${shown} item${shown===1?'':'s'}`;
 }
-
-// Modal open/close
 function openHistory(){ historyModal.classList.add('open'); renderHistory(histSearch.value); }
 function closeHistoryModal(){ historyModal.classList.remove('open'); }
 openHistoryBtn.addEventListener('click', openHistory);
 closeHistory.addEventListener('click', closeHistoryModal);
 historyModal.addEventListener('click', (e)=>{ if(e.target===historyModal) closeHistoryModal(); });
-
-// Filter live
 histSearch.addEventListener('input', ()=> renderHistory(histSearch.value));
-
-// Clear all
 clearHistoryBtn.addEventListener('click', ()=>{
   if (!sends.length) return;
   if (!confirm('Clear all history?')) return;
@@ -423,8 +414,6 @@ clearHistoryBtn.addEventListener('click', ()=>{
   refreshDatalists();
   renderHistory(histSearch.value);
 });
-
-// Row actions (event delegation)
 historyTBody.addEventListener('click', async (e)=>{
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
@@ -450,10 +439,7 @@ historyTBody.addEventListener('click', async (e)=>{
     renderHistory(histSearch.value);
   }
 });
-
-// Low-level sender used by history “Send”
 async function sendViaApi(id, extBool, rtrBool, dataStr){
-  // Derive DLC from dataStr tokens or continuous hex
   let bytes = [];
   if (dataStr) {
     const s = dataStr.toUpperCase().replace(/0X/g,'').replace(/,/g,' ').trim();
@@ -479,7 +465,6 @@ async function sendViaApi(id, extBool, rtrBool, dataStr){
     if (j.ok){
       appendStatusRow('[TX OK] '+(extBool?'EXT ':'STD ')+id+' dlc='+dlc);
       rememberSend({ id, ext: extBool, rtr: rtrBool, data: bytes.join(' '), dlc });
-      // If modal is open, refresh to move it to top (MRU)
       if (historyModal.classList.contains('open')) renderHistory(histSearch.value);
     } else {
       appendStatusRow('[TX FAIL]');
@@ -487,18 +472,15 @@ async function sendViaApi(id, extBool, rtrBool, dataStr){
   }catch(_){ appendStatusRow('[TX ERROR]'); }
 }
 
-
 // Boot
 loadSends();
 refreshDatalists();
-
-
 
 // Override mode (SavvyCAN-like)
 let overrideMode = false;
 const overrideBtn = document.getElementById('overrideBtn');
 const rowMap = new Map(); // key -> <tr>
-function makeRowKey(idDisp, ext, rtr){ return (ext ? 'E' : 'S') + '|' + idDisp.toUpperCase(); }
+function makeRowKey(idDisp, ext, rtr){ return (ext ? 'E' : 'S') + '|' + idDisp.toUpperCase() + '|' + (rtr?'R':'D'); }
 overrideBtn.addEventListener('click', ()=>{
   overrideMode = !overrideMode;
   overrideBtn.textContent = 'Override: ' + (overrideMode ? 'ON' : 'OFF');
@@ -511,12 +493,6 @@ const txExt  = document.getElementById('tx_ext');
 const txRtr  = document.getElementById('tx_rtr');
 const txSend = document.getElementById('tx_send');
 const dlcBadge = document.getElementById('dlc_badge');
-
-// WebSocket
-let ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.hostname+':81/');
-
-function scrollBottom(){ termScroller.scrollTop = termScroller.scrollHeight; }
-function showToast(msg){ toast.textContent = msg; toast.style.display='block'; setTimeout(()=>{ toast.style.display='none'; }, 1500); }
 
 // Sidebar (unique IDs with checkboxes)
 const knownIds = new Map(); const selected = new Set();
@@ -531,21 +507,6 @@ function ensureIdRow(idStr){
   row.append(cb,tag,meta); idListEl.append(row);
   const rec={count:0,el:row,cb:cb,meta:meta}; knownIds.set(idStr,rec); return rec;
 }
-function updateSelCount(){ selCountEl.textContent = selected.size>0 ? (selected.size+' selected') : 'all'; }
-idFilterInput.addEventListener('input',()=>{
-  const q=idFilterInput.value.trim().toUpperCase();
-  for(const [idStr,rec] of knownIds.entries()){ rec.el.style.display = idStr.toUpperCase().includes(q)?'':'none'; }
-});
-document.getElementById('selectAllBtn').addEventListener('click',()=>{
-  selected.clear(); for(const [idStr,rec] of knownIds.entries()){ rec.cb.checked=true; selected.add(idStr); } updateSelCount();
-});
-document.getElementById('selectNoneBtn').addEventListener('click',()=>{
-  selected.clear(); for(const [idStr,rec] of knownIds.entries()){ rec.cb.checked=false; } updateSelCount();
-});
-
-// Batched counter updates (DOM throttle)
-const pendingCountUpdates = new Map();
-let countRAF = null;
 function incrementIdCountBatched(idStr){
   const rec = ensureIdRow(idStr);
   rec.count++;
@@ -561,6 +522,20 @@ function incrementIdCountBatched(idStr){
     });
   }
 }
+function updateSelCount(){ selCountEl.textContent = selected.size>0 ? (selected.size+' selected') : 'all'; }
+idFilterInput.addEventListener('input',()=>{
+  const q=idFilterInput.value.trim().toUpperCase();
+  for(const [idStr,rec] of knownIds.entries()){ rec.el.style.display = idStr.toUpperCase().includes(q)?'':'none'; }
+});
+document.getElementById('selectAllBtn').addEventListener('click',()=>{
+  selected.clear(); for(const [idStr,rec] of knownIds.entries()){ rec.cb.checked=true; selected.add(idStr); } updateSelCount();
+});
+document.getElementById('selectNoneBtn').addEventListener('click',()=>{
+  selected.clear(); for(const [idStr,rec] of knownIds.entries()){ rec.cb.checked=false; } updateSelCount();
+});
+// Batched counter updates (DOM throttle)
+const pendingCountUpdates = new Map();
+let countRAF = null;
 
 // Table rendering
 let frameCounter=0;
@@ -570,7 +545,12 @@ function appendStatusRow(text){
   const td=document.createElement('td'); td.colSpan=7; td.textContent=text;
   tr.appendChild(td); frameBody.appendChild(tr); scrollBottom();
 }
-function appendFrameRow(obj){
+function appendStatusRowBatched(text, frag){
+  const tr=document.createElement('tr'); tr.className='row-status';
+  const td=document.createElement('td'); td.colSpan=7; td.textContent=text;
+  tr.appendChild(td); frag.appendChild(tr);
+}
+function appendFrameRowBatched(obj, frag){
   const tr=document.createElement('tr');
   tr.innerHTML=`<td class="col-idx">${obj.index}</td>
     <td class="col-time">${obj.timePretty}</td>
@@ -579,9 +559,9 @@ function appendFrameRow(obj){
     <td class="col-rtr">${obj.rtr?'RTR':'DAT'}</td>
     <td class="col-dlc">${obj.dlc}</td>
     <td class="col-data">${obj.bytes.join(' ')}</td>`;
-  frameBody.appendChild(tr); scrollBottom();
+  frag.appendChild(tr);
 }
-function upsertFrameRow(obj){
+function upsertFrameRowBatched(obj, frag){
   const key = makeRowKey(obj.idDisp, obj.ext, obj.rtr);
   let tr = rowMap.get(key);
 
@@ -599,16 +579,27 @@ function upsertFrameRow(obj){
     tr._lastHtml = html;
     tr.innerHTML = html;
     rowMap.set(key, tr);
-    frameBody.appendChild(tr);
-  } else {
-    if (tr._lastHtml !== html) { tr.innerHTML = html; tr._lastHtml = html; }
+    frag.appendChild(tr);
+  } else if (tr._lastHtml !== html) {
+    tr.innerHTML = html; tr._lastHtml = html;
   }
-
   tr.style.outline = '2px solid #3b82f6';
   setTimeout(()=>{ tr.style.outline = ''; }, 100);
-
-  const nearBottom = (termScroller.scrollTop + termScroller.clientHeight >= termScroller.scrollHeight - 8);
-  if (nearBottom) scrollBottom();
+}
+function pruneOldRows(){
+  const overshoot = frameBody.rows.length - MAX_DOM_ROWS;
+  if (overshoot > 0) {
+    for (let i=0; i<overshoot; i++) {
+      const r = frameBody.firstChild;
+      if (!r) break;
+      const key = r && r.dataset ? r.dataset.key : null;
+      if (key) rowMap.delete(key);
+      frameBody.removeChild(r);
+    }
+  }
+}
+function scrollBottom(){
+  termScroller.scrollTop = termScroller.scrollHeight;
 }
 
 // Frame parsing from firmware text (unchanged)
@@ -629,6 +620,7 @@ let logActive = false;
 let logFrames = [];
 let logStart_ms = null;
 let logFilename = '';
+const MAX_LOG_FRAMES = 500000; // cap to avoid unbounded RAM use
 
 function normalizeCsvName(s){
   s = (s||'').trim();
@@ -652,45 +644,36 @@ function startLogging(){
   if (!logFilename) { updateStartEnabled(); return; }
   logActive = true; logFrames = []; logStart_ms = null;
   startBtn.disabled = true; stopBtn.disabled  = false;
-  appendStatusRow('[logging] started → ' + logFilename);
+  appendStatusRow('[logging] started \u2192 ' + logFilename);
 }
 function buildSavvyCanCSV(frames){
   const header = 'Time Stamp,ID,Extended,Dir,Bus,Len,D1,D2,D3,D4,D5,D6,D7,D8';
   const lines = [header];
 
   for (const f of frames){
-    // Normalize to 8 columns, 2-digit hex or empty
     const raw = (f.bytes || []);
     const b = Array.from({length:8}, (_, i) => {
       let v = (raw[i] || '').toString().trim();
       if (!v) return '';
-      v = v.replace(/^0x/i, '').toUpperCase();          // drop 0x, uppercase
-      if (v.length === 1) v = '0' + v;                  // pad single nibble
-      if (v.length > 2)   v = v.slice(-2);              // clamp to 2 chars
+      v = v.replace(/^0x/i, '').toUpperCase();
+      if (v.length === 1) v = '0' + v;
+      if (v.length > 2)   v = v.slice(-2);
       return v;
     });
-
-    // Compute actual length from non-empty byte cells
     const len = b.reduce((n, x) => n + (x !== '' ? 1 : 0), 0);
-
-    // Compose row (Dir is Rx for logging)
     const row = [
-      String(f.ts_us_neg),                 // e.g. "-1234567" (µs, negative)
-      String(f.idHex8),                    // 8-digit hex, no "0x"
-      (f.ext ? 'TRUE' : 'FALSE'),          // Extended
-      'Rx',                                // Dir
-      '0',                                 // Bus index
-      String(len),                         // Len derived from bytes
+      String(f.ts_us_neg),
+      String(f.idHex8),
+      (f.ext ? 'TRUE' : 'FALSE'),
+      'Rx',
+      '0',
+      String(len),
       ...b
     ];
-
     lines.push(row.join(','));
   }
-
-  // CRLF + trailing newline
   return lines.join('\r\n') + '\r\n';
 }
-
 function downloadCSV(csvText, filename){
   try {
     const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
@@ -724,40 +707,105 @@ async function uploadCsvFile(csvText, filename){
       method: 'POST', headers: { 'X-Auth-Token': AUTH_TOKEN }, body: blob
     });
     const j = await res.json();
-    if (j.ok) { showToast('Upload OK: ' + j.file); appendStatusRow('[upload] OK → ' + j.file + ' (' + (j.bytes||'?') + ' bytes)'); }
+    if (j.ok) { showToast('Upload OK: ' + j.file); appendStatusRow('[upload] OK \u2192 ' + j.file + ' (' + (j.bytes||'?') + ' bytes)'); }
     else { showToast('Upload failed: ' + (j.err || 'unknown')); appendStatusRow('[upload] failed: ' + (j.err || 'unknown') ); }
   } catch(e){ showToast('Upload error'); appendStatusRow('[upload] error'); }
 }
 uploadBtn.addEventListener('click', ()=>{ const { csvText, name } = getCsvTextAndName(); uploadCsvFile(csvText, name); });
 
 // WebSocket
+let ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.hostname+':81/');
+
+function scrollBottom(){ termScroller.scrollTop = termScroller.scrollHeight; }
+function showToast(msg){ toast.textContent = msg; toast.style.display='block'; setTimeout(()=>{ toast.style.display='none'; }, 1500); }
+
+// Batched DOM helpers + prune are above
+
+// ===== STREAMED WS HANDLER WITH BACKPRESSURE =====
 ws.onopen = ()=> { statusEl.textContent='connected'; updateStartEnabled(); updateSendEnabled(); };
 ws.onclose= ()=> { statusEl.textContent='disconnected'; updateStartEnabled(); updateSendEnabled(); };
 ws.onerror= ()=> { statusEl.textContent='socket error'; updateStartEnabled(); updateSendEnabled(); };
-ws.onmessage=(ev)=>{
-  const data = ev.data.trim();
-  if (data === '{"type":"ka"}') return; // ignore keep-alive
+ws.onmessage = (ev) => {
+  if (ev.data === '{"type":"ka"}' || ev.data === 'KA' || ev.data === 'KA\n') return; // ignore keep-alive
 
-  const parts = ev.data.replace(/\\r/g,'').split(/\\n|\\\\n/);
-  for(const line of parts){
-    if(!line.length) continue;
+  wsBuf += ev.data.replace(/\r/g, '');
+
+  // Rough byte cap for pending buffer; trim to last full line
+  if (wsBuf.length > 2_000_000) {
+    const cut = wsBuf.lastIndexOf('\n', wsBuf.length - 1_000_000);
+    wsBuf = cut > 0 ? wsBuf.slice(cut + 1) : wsBuf.slice(-1_000_000);
+    appendStatusRow('[drop] throttling (client queue trimmed)');
+  }
+
+  if (!flushTimer) flushTimer = setTimeout(flushWsChunk, BATCH_FLUSH_MS);
+};
+
+function flushWsChunk(){
+  flushTimer = 0;
+
+  const lastNL = wsBuf.lastIndexOf('\n');
+  let chunk = '';
+  if (lastNL >= 0) {
+    chunk = wsBuf.slice(0, lastNL);
+    wsBuf  = wsBuf.slice(lastNL + 1);
+  } else {
+    return; // no full line yet
+  }
+
+  let lines = chunk.split('\n');
+  if (lines.length > MAX_PENDING_LINES) {
+    lines = lines.slice(lines.length - MAX_PENDING_LINES);
+    appendStatusRow('[drop] too many lines (kept latest)');
+  }
+
+  const frag = document.createDocumentFragment();
+  let processed = 0;
+
+  nearBottomCached = (termScroller.scrollTop + termScroller.clientHeight >= termScroller.scrollHeight - SCROLL_SNAPPING_PX);
+
+  for (let i = 0; i < lines.length && processed < MAX_PROCESS_PER_TICK; i++) {
+    const line = lines[i];
+    if (!line) continue;
+
     const f=tryParseFrame(line);
     if(f){
       const idDisp='0x'+f.idHex; incrementIdCountBatched(idDisp);
       const bytes = Array.from({length:8}, (_,i)=> f.dataBytes[i] ? f.dataBytes[i].toUpperCase().padStart(2,'0') : '');
       if(!filterActive() || selected.has(idDisp)){
         const rowObj = { index: ++frameCounter, timePretty: fmtTime(), idDisp, ext: f.ext, rtr: f.rtr, dlc: f.dlc, bytes };
-        if (overrideMode) upsertFrameRow(rowObj); else appendFrameRow(rowObj);
+        if (overrideMode) upsertFrameRowBatched(rowObj, frag); else appendFrameRowBatched(rowObj, frag);
       }
       if (logActive){
         logFrames.push({ ts_us_neg: rel_us_negative(), idHex8: hex8(f.idHex), ext: f.ext, dlc: f.dlc, bytes });
+        if (logFrames.length > MAX_LOG_FRAMES) {
+          logFrames.splice(0, logFrames.length - MAX_LOG_FRAMES);
+          appendStatusRow('[log] capped (oldest dropped)');
+        }
       }
       parseStatus(line);
     } else {
-      appendStatusRow(line); parseStatus(line);
+      appendStatusRowBatched(line, frag); parseStatus(line);
     }
+    processed++;
   }
-};
+
+  if (frag.childNodes.length) {
+    frameBody.appendChild(frag);
+    pruneOldRows();
+    if (nearBottomCached) scrollBottom();
+  }
+
+  if (processed < lines.length || wsBuf.length) {
+    flushTimer = setTimeout(flushWsChunk, BATCH_FLUSH_MS);
+  }
+}
+
+// Smooth CPU use when tab hidden: resume parsing on visible
+document.addEventListener('visibilitychange', ()=>{
+  if (!document.hidden && !flushTimer && wsBuf.length) {
+    flushTimer = setTimeout(flushWsChunk, 0);
+  }
+});
 
 // Utilities
 function clearTerm(){ frameBody.innerHTML=''; frameCounter=0; rowMap.clear(); }
@@ -766,8 +814,8 @@ function setAck(on){
   onBtn.classList.toggle('on',!!on); offBtn.classList.toggle('off',!on);
 }
 function parseStatus(line){
-  if (/\\bNORMAL\\b/i.test(line)) setAck(true);
-  if (/\\bLISTEN\\b/i.test(line)) setAck(false);
+  if (/\bNORMAL\b/i.test(line)) setAck(true);
+  if (/\bLISTEN\b/i.test(line)) setAck(false);
 }
 
 // ========== Web-only control (HTTP) ==========
@@ -812,30 +860,13 @@ function parseDataBytesFlexible(v){
     }
   } else {
     if (!/^[0-9A-F]+$/.test(v)) return null;
-    if (v.length % 2 === 1) v = '0' + v;   // e.g. "A12" -> "0A12"
+    if (v.length % 2 === 1) v = '0' + v;
     for (let i = 0; i < v.length && out.length < 8; i += 2) {
       out.push(v.slice(i, i + 2));
     }
   }
   return out;
 }
-
-// Reset button
-const resetBtn = document.getElementById('resetBtn');
-resetBtn.addEventListener('click', async ()=>{
-  if (!confirm('Are you sure you want to restart the device?')) return;
-  try {
-    const r = await fetch('/api/reset', { method:'POST' });
-    await r.json();
-    showToast('Device restarting…');
-    // Give the ESP32 time to reboot; then try to reload this page.
-    setTimeout(()=> location.reload(), 4000);
-  } catch (e) {
-    showToast('Reset failed');
-  }
-});
-
-
 function updateDLCandValidity(){
   const id = parseIdField(txId.value);
   const rtr = txRtr.checked;
@@ -889,7 +920,6 @@ async function trySend(){
     const j = await r.json();
     if (j.ok) {
       appendStatusRow('[TX OK] '+(txExt.checked?'EXT ':'STD ')+id+' dlc='+dlc);
-      // >>> save to cache <<<
       rememberSend({ id, ext: txExt.checked, rtr: txRtr.checked, data: dataStr, dlc });
     } else {
       appendStatusRow('[TX FAIL]');
@@ -898,7 +928,6 @@ async function trySend(){
     appendStatusRow('[TX ERROR]');
   }
 }
-
 
 // Settings UI
 function openSettings(){ settingsModal.classList.add('open'); loadSettings(); }
@@ -936,7 +965,7 @@ saveSta.addEventListener('click', async ()=>{
 // Local ping probe (works in AP, doesn’t require Internet)
 let wsAlive = false;
 function setOnlineUI(isUp) {
-  // (optional) inject your banner node with id="netStatus"
+  // optional: implement a banner if desired
 }
 function onWSOpen()  { wsAlive = true;  setOnlineUI(true); }
 function onWSClose() { wsAlive = false; setOnlineUI(false); }
@@ -947,7 +976,6 @@ async function checkLocalLink() {
 setInterval(checkLocalLink, 4000);
 
 // Enable start button when WS is ready
-function updateSendEnabled(validNow){ const wsOk = (ws && ws.readyState===1); if (typeof validNow==='undefined'){ const tmp=updateDLCandValidity(); validNow = tmp.valid; } txSend.disabled = !(wsOk && validNow); }
 ws.addEventListener('open', ()=>{ updateStartEnabled(); });
 
 </script>

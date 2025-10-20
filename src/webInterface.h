@@ -349,6 +349,18 @@ historyBtn.addEventListener('click', ()=>{
   showToast('Last sent restored');
 });
 
+resetBtn.addEventListener('click', async ()=>{
+  if (!confirm('Are you sure you want to restart the device?')) return;
+  try {
+    const r = await fetch('/api/reset', { method:'POST' });
+    await r.json();
+    showToast('Device restarting…');
+    setTimeout(()=> location.reload(), 4000);
+  } catch (e) {
+    showToast('Reset failed');
+  }
+});
+
 // ===== History Modal =====
 const openHistoryBtn   = document.getElementById('openHistoryBtn');
 const historyModal     = document.getElementById('historyModal');

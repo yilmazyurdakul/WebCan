@@ -146,7 +146,72 @@ static const byte MCP2515_INT = 25;
 
 // ================== ACAN2515 ==================
 ACAN2515 can(MCP2515_CS, SPI, MCP2515_INT);
-static const uint32_t QUARTZ_FREQUENCY = 16UL * 1000UL * 1000UL; // 16 MHz
+static const uint32_t QUARTZ_FREQUENCY = 8UL * 1000UL * 1000UL; // 16 MHz
+
+// ===== OLED transient overlay (auto-clears) =====
+static char     gOledTransient[22] = {0}; // up to ~21 chars
+static uint32_t gOledTransientUntil = 0;  // millis() deadline
+
+static void oledRenderBase(); // forward
+
+// ===== OLED idle sleep (10s) =====
+static bool     gOledAsleep = false;
+static uint32_t gLastActivity = 0;
+static const uint32_t OLED_IDLE_MS = 10000; // 10 seconds
+
+// Put these under your existing OLED helpers:
+static void oledSleep(bool on) {
+  if (!gOledOK) return;
+  if (on) {
+    display.ssd1306_command(SSD1306_DISPLAYOFF);
+    gOledAsleep = true;
+  } else {
+    display.ssd1306_command(SSD1306_DISPLAYON);
+    gOledAsleep = false;
+    oledRenderBase(); // redraw base immediately on wake
+  }
+}
+
+static void oledFlash(const char* msg, uint32_t ms = 1000) {
+  if (!gOledOK || !msg || !msg[0]) return;
+  strncpy(gOledTransient, msg, sizeof(gOledTransient) - 1);
+  gOledTransient[sizeof(gOledTransient) - 1] = 0;
+  gOledTransientUntil = millis() + ms;
+  oledRenderBase(); // draw base + overlay immediately
+}
+
+// Bump activity and optionally flash a short overlay.
+// If the OLED is asleep, wake it first.
+static inline void oledBump(const char* transient = nullptr, uint32_t flashMs = 800) {
+  gLastActivity = millis();
+  if (gOledAsleep) {
+    oledSleep(false); // wake + redraw base
+  }
+  if (transient && transient[0]) {
+    oledFlash(transient, flashMs); // uses your existing transient system
+  }
+}
+
+
+static void oledTick() {
+  if (!gOledOK) return;
+  const uint32_t now = millis();
+
+  // Put display to sleep after inactivity
+  if (!gOledAsleep && (now - gLastActivity) >= OLED_IDLE_MS) {
+    oledSleep(true); // off
+    return;          // stop drawing while asleep
+  }
+
+  // Handle transient overlay expiry
+  if (gOledTransientUntil && (int32_t)(now - gOledTransientUntil) >= 0) {
+    gOledTransient[0] = 0;
+    gOledTransientUntil = 0;
+    if (!gOledAsleep) {
+      oledRenderBase(); // only redraw when awake
+    }
+  }
+}
 
 // ================== OLED ==================
 static void oledInit()
@@ -163,32 +228,46 @@ static void oledInit()
   display.println("OLED ready");
   display.display();
 }
-static void oledShowIP(const char *extraLine)
-{
-  if (!gOledOK)
-    return;
+// Draw the persistent “base” status (no sticky messages)
+static void oledRenderBase() {
+  if (!gOledOK) return;
   bool staUp = (WiFi.status() == WL_CONNECTED);
   IPAddress ip = staUp ? WiFi.localIP() : WiFi.softAPIP();
+
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.print("Mode: ");
-  display.println(staUp ? "STA" : "AP");
-  display.print("SSID: ");
-  display.println(staUp ? gStaCfg.ssid : gApCfg.ssid);
-  display.print("IP:   ");
-  display.println(ip.toString());
-  display.print("CAN:  ");
-  display.print(currentKbps);
-  display.print(" kbps ");
+
+  display.println("WebCan Interface");
+  display.print ("Mode: "); display.println(staUp ? "STA" : "AP");
+  display.print ("SSID: "); display.println(staUp ? gStaCfg.ssid : gApCfg.ssid);
+  display.print ("IP:   "); display.println(ip.toString());
+  display.print ("CAN:  ");
+  display.print (currentKbps); display.print(" kbps ");
   display.println(ackMode ? "NORM" : "LISTEN");
-  if (extraLine && extraLine[0])
-  {
-    display.println();
-    display.println(extraLine);
+
+  // If a transient message is active, draw a small overlay box at the bottom
+  if (gOledTransient[0]) {
+    const int x = 0, y = 48, w = 128, h = 16;
+    display.fillRect(x, y, w, h, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+    display.setCursor(2, y + 4);
+    display.print(gOledTransient);
+    display.setTextColor(SSD1306_WHITE);
   }
+
   display.display();
+}
+
+// Backward-compatible wrapper: still accepts extraLine, but shows it as a
+// 1-second transient overlay instead of keeping it permanently.
+static void oledShowIP(const char *extraLine) {
+  if (!gOledOK) return;
+  oledRenderBase();                    // render base
+  if (extraLine && extraLine[0]) {     // flash overlay briefly
+    oledFlash(extraLine, 1000);
+  }
 }
 
 // ================== AP/STA cfg helpers ==================
@@ -343,6 +422,7 @@ static bool reconfigure(uint16_t kbps)
     char msg[64];
     snprintf(msg, sizeof(msg), "ACAN2515 config error 0x%X", ec);
     ws.broadcastTXT(msg);
+    oledShowIP(msg);
     canReady = false;
     return false;
   }
@@ -352,6 +432,9 @@ static bool reconfigure(uint16_t kbps)
   snprintf(ok, sizeof(ok), "ACAN2515 initialized @ %u kbps (%s)",
            kbps, ackMode ? "NORMAL" : "LISTEN");
   ws.broadcastTXT(ok);
+
+oledBump("CAN updated", 1000); // flash + wake + reset idle timer
+
   oledShowIP("CAN updated");
   return true;
 }
@@ -366,6 +449,7 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
       ws.sendTXT(num, "WebCAN ready (web-only).");
       if (eg) xEventGroupSetBits(eg, BIT_WS_HAS_CLIENT);
       wsFlushIfNeeded(ws, true);
+      oledBump("WS connected", 800);
       break;
     }
     case WStype_DISCONNECTED:
@@ -373,6 +457,7 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
       if (ws.connectedClients() == 0 && eg) {
         xEventGroupClearBits(eg, BIT_WS_HAS_CLIENT);
       }
+      oledBump("WS closed", 800);
       break;
     }
     case WStype_TEXT:
@@ -400,12 +485,14 @@ static void startWiFi()
     }
     if (WiFi.status() == WL_CONNECTED)
     {
+      oledBump("Connected", 1000);
       oledShowIP("Connected");
       return;
     }
   }
   WiFi.mode(WIFI_AP);
   WiFi.softAP(gApCfg.ssid, gApCfg.pass, AP_CHANNEL, AP_HIDDEN, AP_MAX_CONN);
+  oledBump("AP active", 1000);
   oledShowIP("AP active");
 }
 
@@ -549,6 +636,7 @@ static void setupHttp()
     memcpy(f.data, bytes, dlc);
 
     if (xQueueSend(qTx, &f, 0) == pdTRUE) http.send(200,"application/json","{\"ok\":1}");
+                                          
     else                                  http.send(503,"application/json","{\"ok\":0,\"err\":\"tx_queue_full\"}");
   });
 
@@ -577,6 +665,8 @@ void setup()
   pinMode(LED_BUILTIN, OUTPUT);
   oledInit();
   delay(50);
+  gLastActivity = millis(); // start the idle timer
+
   led.begin();
   led.on();
 
@@ -603,6 +693,7 @@ void setup()
 // ================== Loop ==================
 void loop(){
   // Nothing heavy here; tasks do the work
+  oledTick();  
   vTaskDelay(1);
 }
 

@@ -157,7 +157,7 @@ static void oledRenderBase(); // forward
 // ===== OLED idle sleep (10s) =====
 static bool     gOledAsleep = false;
 static uint32_t gLastActivity = 0;
-static const uint32_t OLED_IDLE_MS = 10000; // 10 seconds
+static const uint32_t OLED_IDLE_MS = 30000; // 10 seconds
 
 // Put these under your existing OLED helpers:
 static void oledSleep(bool on) {
@@ -223,9 +223,9 @@ static void oledInit()
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println("ESP32 CAN Terminal");
-  display.println("OLED ready");
+  display.setCursor(3, 3);
+  display.println("WebCan Terminal");
+  display.println("Starting...");
   display.display();
 }
 // Draw the persistent “base” status (no sticky messages)
@@ -696,6 +696,8 @@ void loop(){
   oledTick();  
   vTaskDelay(1);
 }
+
+
 
 // ================== CAN Task (Core 1) ==================
 static void canTask(void*){

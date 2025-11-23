@@ -271,6 +271,7 @@ const saveAp = document.getElementById('saveAp');
 const saveSta = document.getElementById('saveSta');
 const netBadge = document.getElementById('netBadge');
 const toast = document.getElementById('toast');
+const resetBtn = document.getElementById('resetBtn');  // added so reset works
 
 // ===== Performance limits (tune as needed) =====
 const MAX_DOM_ROWS         = 1500;
@@ -451,6 +452,7 @@ historyTBody.addEventListener('click', async (e)=>{
     renderHistory(histSearch.value);
   }
 });
+
 async function sendViaApi(id, extBool, rtrBool, dataStr){
   let bytes = [];
   if (dataStr) {
@@ -477,6 +479,30 @@ async function sendViaApi(id, extBool, rtrBool, dataStr){
     if (j.ok){
       appendStatusRow('[TX OK] '+(extBool?'EXT ':'STD ')+id+' dlc='+dlc);
       rememberSend({ id, ext: extBool, rtr: rtrBool, data: bytes.join(' '), dlc });
+
+      // ---- NEW: show TX frame in table + log it ----
+      const idHex  = parseIdField(id) || id;
+      const idDisp = '0x' + (parseIdField(id) || idHex);
+      const rowBytes = Array.from({length:8}, (_,i)=> bytes[i] ? bytes[i].toUpperCase().padStart(2,'0') : '');
+      incrementIdCountBatched(idDisp);
+      const rowObj = {
+        index: ++frameCounter,
+        timePretty: fmtTime(),
+        idDisp,
+        ext: extBool,
+        rtr: rtrBool,
+        dlc,
+        bytes: rowBytes
+      };
+      const fragTx = document.createDocumentFragment();
+      if (overrideMode) upsertFrameRowBatched(rowObj, fragTx); else appendFrameRowBatched(rowObj, fragTx);
+      frameBody.appendChild(fragTx);
+      pruneOldRows();
+      scrollBottom();
+
+      logTxFrame(parseIdField(id) || id, extBool, dlc, bytes);
+      // ----------------------------------------------
+
       if (historyModal.classList.contains('open')) renderHistory(histSearch.value);
     } else {
       appendStatusRow('[TX FAIL]');
@@ -634,11 +660,28 @@ let logStart_ms = null;
 let logFilename = '';
 const MAX_LOG_FRAMES = 500000; // cap to avoid unbounded RAM use
 
+// ---- NEW: helper to log TX frames (same structure as RX) ----
+function logTxFrame(idHex, ext, dlc, bytes) {
+  if (!logActive) return;
+  logFrames.push({
+    ts_us_neg: rel_us_negative(),
+    idHex8: hex8(idHex),
+    ext: ext,
+    dlc: dlc,
+    bytes: bytes
+  });
+  if (logFrames.length > MAX_LOG_FRAMES) {
+    logFrames.splice(0, logFrames.length - MAX_LOG_FRAMES);
+    appendStatusRow('[log] capped (oldest dropped)');
+  }
+}
+// ------------------------------------------------------------
+
 function normalizeCsvName(s){
   s = (s||'').trim();
   if (!s) return '';
   s = s.replace(/[\\/:*?"<>|]+/g,'_');
-  if (!/\\.csv$/i.test(s)) s += '.csv';
+  if (!/\.csv$/i.test(s)) s += '.csv';
   return s;
 }
 function updateStartEnabled(){
@@ -731,8 +774,6 @@ let ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.ho
 function scrollBottom(){ termScroller.scrollTop = termScroller.scrollHeight; }
 function showToast(msg){ toast.textContent = msg; toast.style.display='block'; setTimeout(()=>{ toast.style.display='none'; }, 1500); }
 
-// Batched DOM helpers + prune are above
-
 // ===== STREAMED WS HANDLER WITH BACKPRESSURE =====
 ws.onopen = ()=> { statusEl.textContent='connected'; updateStartEnabled(); updateSendEnabled(); };
 ws.onclose= ()=> { statusEl.textContent='disconnected'; updateStartEnabled(); updateSendEnabled(); };
@@ -788,7 +829,7 @@ function flushWsChunk(){
         if (overrideMode) upsertFrameRowBatched(rowObj, frag); else appendFrameRowBatched(rowObj, frag);
       }
       if (logActive){
-        logFrames.push({ ts_us_neg: rel_us_negative(), idHex8: hex8(f.idHex), ext: f.ext, dlc: f.dlc, bytes });
+        logFrames.push({ ts_us_neg: rel_us_negative(), idHex8: hex8(f.idHex), ext: f.ext, dlc: f.dlc, bytes: f.dataBytes });
         if (logFrames.length > MAX_LOG_FRAMES) {
           logFrames.splice(0, logFrames.length - MAX_LOG_FRAMES);
           appendStatusRow('[log] capped (oldest dropped)');
@@ -918,11 +959,18 @@ async function trySend(){
   const { id, bytes, dlc, valid } = updateDLCandValidity();
   if (!valid) return;
 
-  const ext = txExt.checked ? '1':'0';
-  const rtr = txRtr.checked ? '1':'0';
+  const extBool = txExt.checked;
+  const rtrBool = txRtr.checked;
   const dataStr = (bytes||[]).join(' ');
 
-  const body = new URLSearchParams({ id, ext, rtr, dlc: String(dlc), data: dataStr });
+  const body = new URLSearchParams({
+    id,
+    ext: extBool ? '1' : '0',
+    rtr: rtrBool ? '1' : '0',
+    dlc: String(dlc),
+    data: dataStr
+  });
+
   try {
     const r = await fetch('/api/can/send', {
       method:'POST',
@@ -931,8 +979,30 @@ async function trySend(){
     });
     const j = await r.json();
     if (j.ok) {
-      appendStatusRow('[TX OK] '+(txExt.checked?'EXT ':'STD ')+id+' dlc='+dlc);
-      rememberSend({ id, ext: txExt.checked, rtr: txRtr.checked, data: dataStr, dlc });
+      appendStatusRow('[TX OK] '+(extBool?'EXT ':'STD ')+id+' dlc='+dlc);
+      rememberSend({ id, ext: extBool, rtr: rtrBool, data: dataStr, dlc });
+
+      // ---- NEW: show TX frame in table + log it ----
+      const idDisp = '0x' + id; // id is already sanitized hex from parseIdField
+      const rowBytes = Array.from({length:8}, (_,i)=> bytes[i] ? bytes[i] : '');
+      incrementIdCountBatched(idDisp);
+      const rowObj = {
+        index: ++frameCounter,
+        timePretty: fmtTime(),
+        idDisp,
+        ext: extBool,
+        rtr: rtrBool,
+        dlc,
+        bytes: rowBytes
+      };
+      const fragTx = document.createDocumentFragment();
+      if (overrideMode) upsertFrameRowBatched(rowObj, fragTx); else appendFrameRowBatched(rowObj, fragTx);
+      frameBody.appendChild(fragTx);
+      pruneOldRows();
+      scrollBottom();
+
+      logTxFrame(id, extBool, dlc, bytes);
+      // ----------------------------------------------
     } else {
       appendStatusRow('[TX FAIL]');
     }

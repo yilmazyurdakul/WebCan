@@ -69,11 +69,13 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <header>
   <strong>WebCan Terminal</strong>
   <span id="status">connecting…</span>
-  <button id="settingsBtn">Settings</button>
+  <div style="margin-left:auto; display:flex; gap:10px;">
+    <button id="sequencerBtn" style="border-color:var(--accent); color:var(--accent)">Sequencer</button>
+    <button id="settingsBtn">Settings</button>
+  </div>
 </header>
 
 <div class="wrap">
-  <!-- Sidebar -->
   <aside id="sidebar">
     <div id="sidetop">
       <div style="font-size:12px;color:#aab3c2">Filter by CAN ID</div>
@@ -87,7 +89,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     <div id="idlist"></div>
   </aside>
 
-  <!-- Main -->
   <main>
     <div id="controls">
       <div class="group" id="rates">
@@ -110,13 +111,11 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <button onclick="closeCan()">Close</button>
       </div>
 
-      <!-- Override mode -->
       <div class="group" id="overridegrp" style="margin-left:12px">
         <span class="label">Terminal:</span>
         <button id="overrideBtn" title="When ON, each ID shows a single updating row">Override: OFF</button>
       </div>
 
-      <!-- Filename (CSV logging) -->
       <div class="group" id="filegrp" style="margin-left:auto">
         <span class="label">Filename:</span>
         <input id="logName" type="text" placeholder="trip_2025_10_15.csv" spellcheck="false">
@@ -128,7 +127,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       </div>
     </div>
 
-    <!-- Table terminal -->
     <div id="term">
       <table>
         <thead>
@@ -146,7 +144,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       </table>
     </div>
 
-    <!-- Bottom send bar -->
     <div id="sendbar">
       <label class="label" for="tx_id">ID</label>
       <input id="tx_id" list="idHistory" placeholder="0x123 or 123" spellcheck="false">
@@ -171,7 +168,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   </main>
 </div>
 
-<!-- Settings Modal -->
 <div class="modal" id="settingsModal" aria-hidden="true">
   <div class="card">
     <div style="display:flex; align-items:center; gap:10px">
@@ -210,7 +206,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   </div>
 </div>
 
-<!-- History Modal -->
 <div class="modal" id="historyModal" aria-hidden="true">
   <div class="card" style="max-width:1000px">
     <div style="display:flex; align-items:center; gap:10px">
@@ -238,6 +233,39 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         </thead>
         <tbody id="historyTBody"></tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="sequencerModal" aria-hidden="true">
+  <div class="card" style="max-width:600px">
+    <div style="display:flex; align-items:center; gap:10px">
+      <h3 style="margin:0; color:var(--accent)">CSV Sequencer</h3>
+      <div style="margin-left:auto"><button id="closeSequencer">Close</button></div>
+    </div>
+    <div class="sep"></div>
+    <div class="grid">
+      <section>
+        <div class="row">
+          <label>CSV File</label>
+          <input type="file" id="seqFile" accept=".csv" style="width:100%">
+        </div>
+        <div class="row" style="margin-top:10px">
+          <label>Delay (ms)</label>
+          <input type="number" id="seqDelay" value="50" min="10" style="width:80px">
+        </div>
+      </section>
+      <section style="display:flex; flex-direction:column; justify-content:center; gap:10px">
+        <div id="seqStatus" style="font-size:12px; color:var(--muted); text-align:center; min-height:20px">No file loaded</div>
+        <div style="display:flex; gap:5px">
+          <button id="startSeqBtn" class="ok" disabled style="flex:1">Start Sequence</button>
+          <button id="stopSeqBtn" class="bad" disabled style="flex:1">Stop</button>
+        </div>
+      </section>
+    </div>
+    <div class="sep"></div>
+    <div class="help">
+      Upload <code>c4bsilog.csv</code> style. Will parse ID, EXT, LEN, DATA and send one by one.
     </div>
   </div>
 </div>
@@ -271,7 +299,17 @@ const saveAp = document.getElementById('saveAp');
 const saveSta = document.getElementById('saveSta');
 const netBadge = document.getElementById('netBadge');
 const toast = document.getElementById('toast');
-const resetBtn = document.getElementById('resetBtn');  // added so reset works
+const resetBtn = document.getElementById('resetBtn'); 
+
+// NEW: Sequencer Elements
+const sequencerBtn = document.getElementById('sequencerBtn');
+const sequencerModal = document.getElementById('sequencerModal');
+const closeSequencer = document.getElementById('closeSequencer');
+const seqFile = document.getElementById('seqFile');
+const seqStatus = document.getElementById('seqStatus');
+const startSeqBtn = document.getElementById('startSeqBtn');
+const stopSeqBtn = document.getElementById('stopSeqBtn');
+const seqDelay = document.getElementById('seqDelay');
 
 // ===== Performance limits (tune as needed) =====
 const MAX_DOM_ROWS         = 1500;
@@ -285,7 +323,7 @@ let flushTimer = 0;
 let nearBottomCached = true;
 
 // ===== Sent frames cache (localStorage by default) =====
-const USE_SESSION = false; // set true to keep only in this tab
+const USE_SESSION = false; 
 const store = USE_SESSION ? sessionStorage : localStorage;
 const LS_KEY_SENDS = 'webcan_sends_v1';
 const MAX_SAVED = 100;
@@ -1059,6 +1097,82 @@ setInterval(checkLocalLink, 4000);
 
 // Enable start button when WS is ready
 ws.addEventListener('open', ()=>{ updateStartEnabled(); });
+
+// ===== SEQUENCER LOGIC =====
+sequencerBtn.onclick = () => sequencerModal.classList.add('open');
+closeSequencer.onclick = () => sequencerModal.classList.remove('open');
+sequencerModal.onclick = (e) => { if(e.target === sequencerModal) sequencerModal.classList.remove('open'); }
+
+let seqFrames = [];
+let seqRunning = false;
+seqFile.addEventListener('change', ()=>{
+  const f = seqFile.files[0];
+  if(!f) return;
+  const r = new FileReader();
+  r.onload = (e) => {
+    const lines = e.target.result.split(/\r?\n/);
+    seqFrames = [];
+    // Skip header (i=1)
+    for(let i=1; i<lines.length; i++){
+      const cols = lines[i].split(',');
+      if(cols.length < 6) continue;
+      // c4bsilog format: Time, ID, Ext, Dir, Bus, Len, Data...
+      // ID is often 00000752 or 752. Parse as hex.
+      let idStr = cols[1];
+      if(idStr.length > 8) idStr = idStr.substring(idStr.length - 8); 
+      // Ensure hex format
+      try { idStr = parseInt(idStr, 16).toString(16).toUpperCase(); } catch(e){ continue; }
+      
+      const ext = (cols[2].toUpperCase() === 'TRUE');
+      const dlc = parseInt(cols[5]);
+      let data = "";
+      for(let j=0; j<dlc; j++) {
+        if(cols[6+j]) data += cols[6+j].trim() + " ";
+      }
+      seqFrames.push({id: idStr, ext, rtr:false, dlc, data: data.trim()});
+    }
+    seqStatus.innerText = `Loaded ${seqFrames.length} frames. Ready.`;
+    startSeqBtn.disabled = false;
+  };
+  r.readAsText(f);
+});
+
+startSeqBtn.addEventListener('click', async ()=>{
+  if(!seqFrames.length) return;
+  seqRunning = true;
+  startSeqBtn.disabled = true;
+  stopSeqBtn.disabled = false;
+  const delay = parseInt(seqDelay.value) || 50;
+
+  for(let i=0; i<seqFrames.length; i++){
+    if(!seqRunning) break;
+    const f = seqFrames[i];
+    seqStatus.innerText = `Sending ${i+1}/${seqFrames.length}: ID ${f.id}`;
+    
+    // Use the existing send API helper
+    try {
+        const body = new URLSearchParams({ 
+            id: f.id, 
+            ext: f.ext?'1':'0', 
+            rtr: '0', 
+            data: f.data, 
+            dlc: f.dlc 
+        });
+        await fetch('/api/can/send', { method:'POST', body });
+    } catch(err){}
+    
+    await new Promise(r => setTimeout(r, delay));
+  }
+  seqRunning = false;
+  startSeqBtn.disabled = false;
+  stopSeqBtn.disabled = true;
+  seqStatus.innerText = "Sequence Finished.";
+});
+
+stopSeqBtn.addEventListener('click', ()=>{
+  seqRunning = false;
+  seqStatus.innerText = "Stopped by user.";
+});
 
 </script>
 </body></html>

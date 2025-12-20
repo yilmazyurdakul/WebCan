@@ -1,6 +1,6 @@
 // =============================================================
-// WebCan Terminal + SLCAN (Compatibility Mode)
-// Baud: 115200 (Standard)
+// WebCan Terminal + SLCAN (Fixed: OLED ALWAYS ON)
+// Baud: 115200
 // =============================================================
 
 #include <Arduino.h>
@@ -31,6 +31,7 @@
 
 // ================== CONFIGURATION ==================
 #define SERIAL_BAUD_RATE 115200 
+#define TRAFFIC_BLINK_MS 150 
 
 // ================== DATA STRUCTURES ==================
 struct FrameLite {
@@ -61,12 +62,13 @@ static TaskHandle_t hNetTask = nullptr;
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 static bool gOledOK = false;
 
-// OLED Thread Safety
-static volatile bool gOledWakeReq = false;       
+// OLED Thread Safety & Traffic State
+static volatile bool gOledWakeReq = false; // Kept for API compatibility, logic removed
 static volatile bool gOledRedrawReq = false;     
 static volatile bool gOledMsgReq = false;        
 static char gOledMsgBuf[22] = {0};               
 static portMUX_TYPE gOledMux = portMUX_INITIALIZER_UNLOCKED; 
+static volatile uint32_t gLastTrafficTs = 0; 
 
 // Web
 WebServer http(80);
@@ -192,6 +194,7 @@ static void oledInit() {
 }
 
 static void oledBump(const char* transient) {
+  // Wake request is now technically redundant but harmless
   gOledWakeReq = true; 
   if (transient && transient[0]) {
     portENTER_CRITICAL(&gOledMux);
@@ -219,46 +222,65 @@ static void oledRenderBase() {
   display.print("CAN: "); display.print(currentKbps); display.println(" kbps");
   display.print("State: "); display.println(canReady ? "ACTIVE" : "CLOSED");
 
-  // Note: Transient msg drawn in Tick for simplicity in this merging strategy
+  // --- TRAFFIC INDICATOR LOGIC ---
+  bool isActive = (millis() - gLastTrafficTs) < TRAFFIC_BLINK_MS;
+  if (isActive) {
+      display.fillRect(118, 0, 10, 10, SSD1306_WHITE); // Filled
+  } else {
+      display.drawRect(118, 0, 10, 10, SSD1306_WHITE); // Empty
+  }
+  // -------------------------------
+
   display.display();
 }
 
 static void oledTick() {
   if (!gOledOK) return;
   
-  static bool asleep = false;
-  static uint32_t lastAct = 0;
   static char currentMsg[22] = {0};
   static uint32_t msgExpire = 0;
+  static uint32_t lastRender = 0;
+  
+  // Track traffic state to force redraws when it starts/stops
+  static bool wasActive = false; 
 
-  bool wake = gOledWakeReq; gOledWakeReq = false;
+  // Consume flags
+  gOledWakeReq = false; // Ignored (No sleep)
   bool redraw = gOledRedrawReq; gOledRedrawReq = false;
   
+  // Calculate current traffic state
+  bool isActive = (millis() - gLastTrafficTs) < TRAFFIC_BLINK_MS;
+
+  // Force redraw if Traffic State Changed
+  if (isActive != wasActive) {
+      redraw = true;
+      wasActive = isActive;
+  }
+
+  // Check for new transient messages
   if (gOledMsgReq) {
     portENTER_CRITICAL(&gOledMux);
     strcpy(currentMsg, gOledMsgBuf);
     gOledMsgReq = false;
     portEXIT_CRITICAL(&gOledMux);
     msgExpire = millis() + 1500;
-    wake = true; redraw = true;
+    redraw = true;
   }
 
-  if (wake) {
-    if (asleep) { display.ssd1306_command(SSD1306_DISPLAYON); asleep = false; }
-    lastAct = millis();
-  }
-
-  if (!asleep && (millis() - lastAct > 30000)) {
-    display.ssd1306_command(SSD1306_DISPLAYOFF);
-    asleep = true;
-  }
-
+  // Clear expired messages
   if (msgExpire && millis() > msgExpire) {
     currentMsg[0] = 0; msgExpire = 0; redraw = true;
   }
 
-  if (redraw && !asleep) {
+  // Forced Traffic Throttle (ensure we see the blink even during high load)
+  if (isActive && (millis() - lastRender > 100)) {
+      redraw = true;
+  }
+
+  // Final Redraw
+  if (redraw) {
     oledRenderBase();
+    lastRender = millis();
     if (currentMsg[0]) {
        display.fillRect(0, 45, 128, 19, SSD1306_WHITE);
        display.setTextColor(SSD1306_BLACK);
@@ -367,7 +389,6 @@ static void slcanDump(const FrameLite &f) {
   }
   buf[idx++] = '\r';
 
-  // SAFETY CHECK: If Serial is slow, don't block. Drop frame if buffer full.
   if (Serial.availableForWrite() >= idx) {
     Serial.write((uint8_t*)buf, idx);
   }
@@ -378,6 +399,7 @@ static void canTask(void* pv) {
     // 1. Process TX 
     FrameLite txf;
     while(xQueueReceive(qTx, &txf, 0) == pdTRUE) {
+      gLastTrafficTs = millis(); 
       CANMessage m; 
       m.id = txf.id; m.ext = fl_ext(txf); m.rtr = fl_rtr(txf); m.len = txf.len;
       memcpy(m.data, txf.data, txf.len);
@@ -389,6 +411,8 @@ static void canTask(void* pv) {
        int count = 0;
        while (can.available() && count < 64) {
          can.receive(rx);
+         gLastTrafficTs = millis(); 
+
          FrameLite f; f.id = rx.id; f.len = rx.len; 
          f.flags = (rx.ext?1:0) | (rx.rtr?2:0);
          memcpy(f.data, rx.data, rx.len);
@@ -442,7 +466,7 @@ static void netTask(void* pv) {
 
 // ================== SETUP & LOOP ==================
 void setup() {
-  Serial.begin(SERIAL_BAUD_RATE); // 115200 for compatibility
+  Serial.begin(SERIAL_BAUD_RATE); 
   oledInit();
 
   loadApConfig();

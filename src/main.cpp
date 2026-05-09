@@ -20,9 +20,6 @@
 #include <FS.h>
 #include <SPIFFS.h>
 #include <string.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include "webInterface.h" // Provides INDEX_HTML (PROGMEM)
 
 // ---------- RTOS bridge types & forwards ----------
@@ -55,20 +52,6 @@ static TaskHandle_t hNetTask = nullptr;
 // ================== Status LED ==================
 LedStatus led;
 
-// ================== OLED pins/addr ==================
-#ifndef OLED_SDA
-  #define OLED_SDA 21
-#endif
-#ifndef OLED_SCL
-  #define OLED_SCL 22
-#endif
-#ifndef OLED_ADDR
-  #define OLED_ADDR 0x3C
-#endif
-#define OLED_RESET -1
-Adafruit_SSD1306 display(128, 64, &Wire, OLED_RESET);
-static bool gOledOK = false;
-
 // ================== WS batching (legacy helpers; netTask has its own too) ==================
 #define WS_BATCH_BYTES 8192
 #define WS_FLUSH_EVERY_MS 5
@@ -100,13 +83,13 @@ static const uint32_t WS_KEEPALIVE_MS = 5000; // 5s
 // ================== Forward decls ==================
 struct CANMessage; // from ACAN2515.h
 static bool reconfigure(uint16_t kbps);
-static void oledShowIP(const char *extraLine = nullptr);
 
 // ================== CAN state ==================
 static bool canReady = false;
-static bool ackMode = true;        // true=NORMAL (ACK), false=ListenOnly
-static bool printFrames = true;    // push frames to WS
-static uint16_t currentKbps = 500; // active bitrate
+static bool bridgeMode = true;     // NEW: Toggle for bi-directional routing
+static bool ackMode = true;        
+static bool printFrames = true;    
+static uint16_t currentKbps = 500;
 
 // ================== Wi-Fi configs in flash ==================
 struct ApConfig
@@ -141,134 +124,20 @@ WebSocketsServer ws(81); // ws://<ip>:81/
 static const byte MCP2515_SCK = 14;
 static const byte MCP2515_MOSI = 13;
 static const byte MCP2515_MISO = 12;
-static const byte MCP2515_CS = 26;
-static const byte MCP2515_INT = 25;
 
-// ================== ACAN2515 ==================
-ACAN2515 can(MCP2515_CS, SPI, MCP2515_INT);
-static const uint32_t QUARTZ_FREQUENCY = 8UL * 1000UL * 1000UL; // 16 MHz
+// CAN 1
+static const byte MCP2515_1_CS  = 26;
+static const byte MCP2515_1_INT = 25;
 
-// ===== OLED transient overlay (auto-clears) =====
-static char     gOledTransient[22] = {0}; // up to ~21 chars
-static uint32_t gOledTransientUntil = 0;  // millis() deadline
+// CAN 2 (Add your specific pins here)
+static const byte MCP2515_2_CS  = 33; 
+static const byte MCP2515_2_INT = 27;
 
-static void oledRenderBase(); // forward
+// ================== ACAN2515 Instances ==================
+ACAN2515 can1(MCP2515_1_CS, SPI, MCP2515_1_INT);
+ACAN2515 can2(MCP2515_2_CS, SPI, MCP2515_2_INT);
 
-// ===== OLED idle sleep (10s) =====
-static bool     gOledAsleep = false;
-static uint32_t gLastActivity = 0;
-static const uint32_t OLED_IDLE_MS = 30000; // 10 seconds
-
-// Put these under your existing OLED helpers:
-static void oledSleep(bool on) {
-  if (!gOledOK) return;
-  if (on) {
-    display.ssd1306_command(SSD1306_DISPLAYOFF);
-    gOledAsleep = true;
-  } else {
-    display.ssd1306_command(SSD1306_DISPLAYON);
-    gOledAsleep = false;
-    oledRenderBase(); // redraw base immediately on wake
-  }
-}
-
-static void oledFlash(const char* msg, uint32_t ms = 1000) {
-  if (!gOledOK || !msg || !msg[0]) return;
-  strncpy(gOledTransient, msg, sizeof(gOledTransient) - 1);
-  gOledTransient[sizeof(gOledTransient) - 1] = 0;
-  gOledTransientUntil = millis() + ms;
-  oledRenderBase(); // draw base + overlay immediately
-}
-
-// Bump activity and optionally flash a short overlay.
-// If the OLED is asleep, wake it first.
-static inline void oledBump(const char* transient = nullptr, uint32_t flashMs = 800) {
-  gLastActivity = millis();
-  if (gOledAsleep) {
-    oledSleep(false); // wake + redraw base
-  }
-  if (transient && transient[0]) {
-    oledFlash(transient, flashMs); // uses your existing transient system
-  }
-}
-
-
-static void oledTick() {
-  if (!gOledOK) return;
-  const uint32_t now = millis();
-
-  // Put display to sleep after inactivity
-  if (!gOledAsleep && (now - gLastActivity) >= OLED_IDLE_MS) {
-    oledSleep(true); // off
-    return;          // stop drawing while asleep
-  }
-
-  // Handle transient overlay expiry
-  if (gOledTransientUntil && (int32_t)(now - gOledTransientUntil) >= 0) {
-    gOledTransient[0] = 0;
-    gOledTransientUntil = 0;
-    if (!gOledAsleep) {
-      oledRenderBase(); // only redraw when awake
-    }
-  }
-}
-
-// ================== OLED ==================
-static void oledInit()
-{
-  Wire.begin(OLED_SDA, OLED_SCL);
-  gOledOK = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
-  if (!gOledOK)
-    return;
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(3, 3);
-  display.println("WebCan Terminal");
-  display.println("Starting...");
-  display.display();
-}
-// Draw the persistent “base” status (no sticky messages)
-static void oledRenderBase() {
-  if (!gOledOK) return;
-  bool staUp = (WiFi.status() == WL_CONNECTED);
-  IPAddress ip = staUp ? WiFi.localIP() : WiFi.softAPIP();
-
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-
-  display.println("WebCan Interface");
-  display.print ("Mode: "); display.println(staUp ? "STA" : "AP");
-  display.print ("SSID: "); display.println(staUp ? gStaCfg.ssid : gApCfg.ssid);
-  display.print ("IP:   "); display.println(ip.toString());
-  display.print ("CAN:  ");
-  display.print (currentKbps); display.print(" kbps ");
-  display.println(ackMode ? "NORM" : "LISTEN");
-
-  // If a transient message is active, draw a small overlay box at the bottom
-  if (gOledTransient[0]) {
-    const int x = 0, y = 48, w = 128, h = 16;
-    display.fillRect(x, y, w, h, SSD1306_WHITE);
-    display.setTextColor(SSD1306_BLACK);
-    display.setCursor(2, y + 4);
-    display.print(gOledTransient);
-    display.setTextColor(SSD1306_WHITE);
-  }
-
-  display.display();
-}
-
-// Backward-compatible wrapper: still accepts extraLine, but shows it as a
-// 1-second transient overlay instead of keeping it permanently.
-static void oledShowIP(const char *extraLine) {
-  if (!gOledOK) return;
-  oledRenderBase();                    // render base
-  if (extraLine && extraLine[0]) {     // flash overlay briefly
-    oledFlash(extraLine, 1000);
-  }
-}
+static const uint32_t QUARTZ_FREQUENCY = 16UL * 1000UL * 1000UL; // 16 MHz
 
 // ================== AP/STA cfg helpers ==================
 static void setDefaultApConfig()
@@ -416,29 +285,29 @@ static bool reconfigure(uint16_t kbps)
   settings.mTripleSampling = (kbps <= 125);
   settings.mReceiveBufferSize = 128;
 
-  const uint16_t ec = can.begin(settings, []{ can.isr(); });
-  if (ec != 0)
+  // Initialize CAN 1
+  const uint16_t ec1 = can1.begin(settings, []{ can1.isr(); });
+  // Initialize CAN 2
+  const uint16_t ec2 = can2.begin(settings, []{ can2.isr(); });
+
+  if (ec1 != 0 || ec2 != 0)
   {
     char msg[64];
-    snprintf(msg, sizeof(msg), "ACAN2515 config error 0x%X", ec);
+    snprintf(msg, sizeof(msg), "ACAN config error (1: 0x%X, 2: 0x%X)", ec1, ec2);
     ws.broadcastTXT(msg);
-    oledShowIP(msg);
     canReady = false;
     return false;
   }
+  
   canReady = true;
   currentKbps = kbps;
   char ok[64];
-  snprintf(ok, sizeof(ok), "ACAN2515 initialized @ %u kbps (%s)",
+  snprintf(ok, sizeof(ok), "Dual ACAN2515 initialized @ %u kbps (%s)",
            kbps, ackMode ? "NORMAL" : "LISTEN");
   ws.broadcastTXT(ok);
 
-oledBump("CAN updated", 1000); // flash + wake + reset idle timer
-
-  oledShowIP("CAN updated");
   return true;
 }
-
 // ================== WebSocket events ==================
 void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
 {
@@ -449,7 +318,6 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
       ws.sendTXT(num, "WebCAN ready (web-only).");
       if (eg) xEventGroupSetBits(eg, BIT_WS_HAS_CLIENT);
       wsFlushIfNeeded(ws, true);
-      oledBump("WS connected", 800);
       break;
     }
     case WStype_DISCONNECTED:
@@ -457,7 +325,6 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
       if (ws.connectedClients() == 0 && eg) {
         xEventGroupClearBits(eg, BIT_WS_HAS_CLIENT);
       }
-      oledBump("WS closed", 800);
       break;
     }
     case WStype_TEXT:
@@ -485,20 +352,26 @@ static void startWiFi()
     }
     if (WiFi.status() == WL_CONNECTED)
     {
-      oledBump("Connected", 1000);
-      oledShowIP("Connected");
       return;
     }
   }
   WiFi.mode(WIFI_AP);
   WiFi.softAP(gApCfg.ssid, gApCfg.pass, AP_CHANNEL, AP_HIDDEN, AP_MAX_CONN);
-  oledBump("AP active", 1000);
-  oledShowIP("AP active");
 }
 
 // ================== HTTP (serves PROGMEM INDEX_HTML + JSON API) ==================
 static void setupHttp()
 {
+  // POST /api/can/bridge?enable=1
+  http.on("/api/can/bridge", HTTP_POST, []()
+  {
+    if (http.hasArg("enable")) {
+      bridgeMode = (http.arg("enable") == "1");
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"ok\":1,\"bridge\":%s}", bridgeMode ? "true" : "false");
+    http.send(200, "application/json", buf);
+  });
   http.on("/", HTTP_GET, []()
   {
     http.send_P(200, "text/html", INDEX_HTML);
@@ -574,8 +447,6 @@ static void setupHttp()
   // POST /api/can/close
   http.on("/api/can/close", HTTP_POST, []()
   {
-    // If your ACAN version supports can.end(), you can call it here.
-    // can.end();
     canReady = false; // soft-close; tasks stop reading
     http.send(200, "application/json", "{\"ok\":1}");
   });
@@ -663,9 +534,6 @@ static void startRtosPipelines() {
 void setup()
 {
   pinMode(LED_BUILTIN, OUTPUT);
-  oledInit();
-  delay(50);
-  gLastActivity = millis(); // start the idle timer
 
   led.begin();
   led.on();
@@ -680,7 +548,7 @@ void setup()
   // SPI + MCP2515 INT
   SPI.begin(MCP2515_SCK, MCP2515_MISO, MCP2515_MOSI);
   SPI.setFrequency(8000000);
-  pinMode(MCP2515_INT, INPUT_PULLUP);
+  pinMode(MCP2515_1_INT, INPUT_PULLUP); // Note: updated to use your can1 INT pin
 
   // Default bitrate (opened immediately)
   ws.broadcastTXT("ESP32 + ACAN2515 Web Terminal (web-only)");
@@ -692,63 +560,79 @@ void setup()
 
 // ================== Loop ==================
 void loop(){
-  // Nothing heavy here; tasks do the work
-  oledTick();  
+  // Nothing heavy here; tasks do the work 
   vTaskDelay(1);
 }
 
-
-
 // ================== CAN Task (Core 1) ==================
 static void canTask(void*){
-  // Tune these
-  const TickType_t rxPollDelay = pdMS_TO_TICKS(1);   // small sleep when idle
-  const uint16_t   maxDrain    = 256;                // per cycle
+  const TickType_t rxPollDelay = pdMS_TO_TICKS(1);
+  const uint16_t   maxDrain    = 256;             
 
   for(;;){
-    // 1) Drain TX queue (non-blocking)
+    // 1) Drain TX queue (Data sent FROM the Web UI)
     FrameLite txf;
     while (xQueueReceive(qTx, &txf, 0) == pdTRUE) {
       CANMessage tx;
-      tx.id  = txf.id;
-      tx.ext = fl_ext(txf);
-      tx.rtr = fl_rtr(txf);
-      tx.len = txf.len;
+      tx.id  = txf.id; tx.ext = fl_ext(txf); tx.rtr = fl_rtr(txf); tx.len = txf.len;
       memcpy(tx.data, txf.data, txf.len);
 
-      // try repeatedly for a short time to avoid drops under load
+      // Web UI sends on CAN1 by default
       for (int i=0;i<3;i++){
-        if (can.tryToSend(tx)) break;
+        if (can1.tryToSend(tx)) break;
         vTaskDelay(pdMS_TO_TICKS(1));
       }
     }
 
-    // 2) Drain CAN RX
     uint16_t drained = 0;
     CANMessage rx;
-    while (canReady && can.available() && drained < maxDrain) {
-      can.receive(rx);
+
+    // 2) Drain CAN1 RX and Bridge to CAN2
+    while (canReady && can1.available() && drained < maxDrain) {
+      can1.receive(rx);
+      
+      // -- THE BRIDGE --
+      if (bridgeMode && ackMode) {
+        can2.tryToSend(rx); 
+      }
+
+      // Forward to Web UI
       FrameLite f{};
-      f.id = rx.id;
-      f.len = rx.len;
-      f.flags = (rx.ext?1:0) | (rx.rtr?2:0);
+      f.id = rx.id; f.len = rx.len; f.flags = (rx.ext?1:0) | (rx.rtr?2:0);
       memcpy(f.data, rx.data, rx.len);
 
-      // if qRx is full, drop oldest to keep UI fresh (optional)
       if (xQueueSend(qRx, &f, 0) != pdTRUE) {
-        FrameLite dummy;
-        xQueueReceive(qRx, &dummy, 0);      // pop one
-        xQueueSend(qRx, &f, 0);             // push current
+        FrameLite dummy; xQueueReceive(qRx, &dummy, 0);
+        xQueueSend(qRx, &f, 0);
       }
       drained++;
     }
 
-    // Back off a little to yield CPU/Wi-Fi
+    // 3) Drain CAN2 RX and Bridge to CAN1
+    while (canReady && can2.available() && drained < maxDrain) {
+      can2.receive(rx);
+      
+      // -- THE BRIDGE --
+      if (bridgeMode && ackMode) {
+        can1.tryToSend(rx); 
+      }
+
+      // Forward to Web UI (Optional: Add a bus tag if you want to distinguish them)
+      FrameLite f{};
+      f.id = rx.id; f.len = rx.len; f.flags = (rx.ext?1:0) | (rx.rtr?2:0);
+      memcpy(f.data, rx.data, rx.len);
+
+      if (xQueueSend(qRx, &f, 0) != pdTRUE) {
+        FrameLite dummy; xQueueReceive(qRx, &dummy, 0);
+        xQueueSend(qRx, &f, 0);
+      }
+      drained++;
+    }
+
     if (drained == 0) vTaskDelay(rxPollDelay);
     else taskYIELD();
   }
 }
-
 // ================== Net Task (Core 0) ==================
 static void netTask(void*){
   // WS batching config (same idea as before)

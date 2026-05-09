@@ -104,11 +104,13 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <button onclick="applyBitrate(1000)">1000</button>
       </div>
 
-      <div class="group" id="ackgrp" style="margin-left:12px">
+<div class="group" id="ackgrp" style="margin-left:12px">
         <span class="label">Mode:</span>
         <button class="ack" id="ack-on"  onclick="openNormal()">Open</button>
         <button class="ack" id="ack-off" onclick="openListen()">Listen</button>
         <button onclick="closeCan()">Close</button>
+        <span class="label" style="margin-left:8px">Routing:</span>
+        <button id="bridgeBtn" onclick="toggleBridge()">Bridge: ON</button>
       </div>
 
       <div class="group" id="overridegrp" style="margin-left:12px">
@@ -678,17 +680,22 @@ function scrollBottom(){
   termScroller.scrollTop = termScroller.scrollHeight;
 }
 
-// Frame parsing from firmware text (unchanged)
+// Frame parsing from firmware text (Supports optional [CAN1]/[CAN2] prefixes)
 function tryParseFrame(line){
-  const m=line.match(/ID:0x([0-9A-Fa-f]+)\s+(EXT|STD)\s+(RTR|DAT)\s+DLC:(\d+)\s+Data:\s*(.*?)\]?\s*$/);
+  // Matches: "[CAN1] [ID:0x7E8..." OR just "[ID:0x7E8..."
+  const m = line.match(/(?:\[CAN(\d+)\]\s*)?\[?ID:0x([0-9A-Fa-f]+)\s+(EXT|STD)\s+(RTR|DAT)\s+DLC:(\d+)\s+Data:\s*(.*?)\]?\s*$/i);
   if(!m) return null;
-  const idHex=m[1].toUpperCase();
-  const ext = (m[2].toUpperCase()==='EXT');
-  const rtr = (m[3].toUpperCase()==='RTR');
-  const dlc = parseInt(m[4],10);
-  const dataBytes = m[5].trim().length? m[5].trim().split(/\s+/).map(b=>b.toUpperCase()) : [];
-  return { idHex, ext, rtr, dlc, dataBytes };
+  
+  const busNum = m[1] ? parseInt(m[1], 10) : 1; // Default to 1 if not specified
+  const idHex = m[2].toUpperCase();
+  const ext = (m[3].toUpperCase() === 'EXT');
+  const rtr = (m[4].toUpperCase() === 'RTR');
+  const dlc = parseInt(m[5], 10);
+  const dataBytes = m[6].trim().length ? m[6].trim().split(/\s+/).map(b => b.toUpperCase()) : [];
+  
+  return { busNum, idHex, ext, rtr, dlc, dataBytes };
 }
+
 function hex8(idHex){ return idHex.padStart(8,'0').toUpperCase(); }
 
 // Logging (SavvyCAN CSV compatible)
@@ -927,6 +934,26 @@ async function openCan(){
 async function closeCan(){
   try { const r = await fetch('/api/can/close', { method:'POST' }); const j = await r.json(); if (j.ok) appendStatusRow('[can] closed'); } catch(e){ appendStatusRow('[can] close error'); }
 }
+
+// ========== Bridge Control ==========
+let bridgeActive = true;
+async function toggleBridge() {
+  bridgeActive = !bridgeActive;
+  const btn = document.getElementById('bridgeBtn');
+  btn.textContent = 'Bridge: ' + (bridgeActive ? 'ON' : 'OFF');
+  btn.style.outline = bridgeActive ? '2px solid var(--accent2)' : '2px solid var(--danger)';
+  
+  try {
+    const body = new URLSearchParams({ enable: bridgeActive ? '1' : '0' });
+    const r = await fetch('/api/can/bridge', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
+    const j = await r.json();
+    if (j.ok) appendStatusRow('[bridge] ' + (bridgeActive ? 'enabled' : 'disabled'));
+  } catch(e) {
+    appendStatusRow('[bridge] toggle error');
+  }
+}
+// Set initial button state outline
+document.getElementById('bridgeBtn').style.outline = '2px solid var(--accent2)';
 
 // Send panel
 function parseIdField(v){

@@ -209,6 +209,21 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         </div>
         <div class="help">On next boot, device tries to join your Wi-Fi if enabled + SSID set.</div>
       </section>
+
+<section>
+        <h4 style="margin:4px 0 8px 0">MQTT Broker</h4>
+        <div class="row"><label>Enable</label><input id="mqtt_enabled" type="checkbox"></div>
+        <div class="row"><label>Server/IP</label><input id="mqtt_server" type="text" maxlength="64" placeholder="broker.hivemq.com"></div>
+        <div class="row"><label>Port</label><input id="mqtt_port" type="number" value="1883" style="width:80px"></div>
+        <div class="row"><label>Username</label><input id="mqtt_user" type="text" maxlength="32" placeholder="(optional)"></div>
+        <div class="row"><label>Password</label><input id="mqtt_pass" type="password" maxlength="64" placeholder="(optional)"></div>
+       <div class="row"><label title="MQTT -> CAN1">Sub Topic</label><input id="mqtt_subTopic" type="text" maxlength="64" placeholder="webcan/tx"></div>
+        <div class="row"><label title="CAN1 -> MQTT">Pub Topic</label><input id="mqtt_pubTopic" type="text" maxlength="64" placeholder="webcan/rx"></div>
+        <div class="actions">
+          <button id="saveMqtt">Save MQTT</button>
+        </div>
+        <div class="help">Connects to broker via Wi-Fi STA to bridge CAN frames.</div>
+      </section>
     </div>
 
     <div class="sep"></div>
@@ -312,6 +327,15 @@ const saveSta = document.getElementById('saveSta');
 const netBadge = document.getElementById('netBadge');
 const toast = document.getElementById('toast');
 const resetBtn = document.getElementById('resetBtn'); 
+
+const mqtt_enabled = document.getElementById('mqtt_enabled');
+const mqtt_server = document.getElementById('mqtt_server');
+const mqtt_port = document.getElementById('mqtt_port');
+const mqtt_user = document.getElementById('mqtt_user');
+const mqtt_pass = document.getElementById('mqtt_pass');
+const saveMqtt = document.getElementById('saveMqtt');
+const mqtt_subTopic = document.getElementById('mqtt_subTopic');
+const mqtt_pubTopic = document.getElementById('mqtt_pubTopic'); 
 
 // NEW: Sequencer Elements
 const sequencerBtn = document.getElementById('sequencerBtn');
@@ -1128,13 +1152,28 @@ settingsModal.addEventListener('click', (e)=>{ if(e.target===settingsModal) clos
 
 async function loadSettings(){
   try{
-    const [apRes, staRes] = await Promise.all([ fetch('/api/apcfg'), fetch('/api/stacfg') ]);
-    const ap = await apRes.json(); const sta = await staRes.json();
+    // We now fetch 3 endpoints at once
+    const [apRes, staRes, mqttRes] = await Promise.all([ fetch('/api/apcfg'), fetch('/api/stacfg'), fetch('/api/mqttcfg') ]);
+    const ap = await apRes.json(); 
+    const sta = await staRes.json();
+    const mqtt = await mqttRes.json();
+
     ap_ssid.value = ap.ssid || ''; ap_pass.value = ap.pass || '';
     sta_enabled.checked = !!sta.enabled; sta_ssid.value = sta.ssid || ''; sta_pass.value = sta.pass || '';
+    
+    // Load MQTT values
+    mqtt_enabled.checked = !!mqtt.enabled;
+    mqtt_server.value = mqtt.server || '';
+    mqtt_port.value = mqtt.port || 1883;
+    mqtt_user.value = mqtt.user || '';
+    mqtt_pass.value = mqtt.pass || '';
+   mqtt_subTopic.value = mqtt.subTopic || 'webcan/tx'; 
+   mqtt_pubTopic.value = mqtt.pubTopic || 'webcan/rx'; // NEW
     netBadge.textContent = (location.hostname === '192.168.4.1') ? 'AP mode' : 'STA mode';
   }catch(e){ showToast('Failed to load settings'); }
 }
+
+
 saveAp.addEventListener('click', async ()=>{
   const ssid = ap_ssid.value.trim(); const pass = ap_pass.value.trim();
   const body = new URLSearchParams({ ssid, pass });
@@ -1150,6 +1189,27 @@ saveSta.addEventListener('click', async ()=>{
     const r = await fetch('/api/stacfg', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
     const j = await r.json(); showToast(j.ok ? 'STA saved. Reboot to apply.' : 'STA save failed');
   }catch(_){ showToast('STA save error'); }
+});
+
+saveMqtt.addEventListener('click', async ()=>{
+  const server = mqtt_server.value.trim(); 
+  const port = mqtt_port.value || 1883;
+  const user = mqtt_user.value.trim(); 
+  const pass = mqtt_pass.value.trim(); 
+  
+  // 1. Grab the value from the HTML input
+  const subTopic = mqtt_subTopic.value.trim(); 
+  const pubTopic = mqtt_pubTopic.value.trim();
+  const enabled = mqtt_enabled.checked ? '1' : '0';
+  
+  // 2. THIS IS THE CRITICAL LINE: Make sure subTopic is in this list!
+const body = new URLSearchParams({ server, port, user, pass, subTopic, pubTopic, enabled });
+  
+  try{
+    const r = await fetch('/api/mqttcfg', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    const j = await r.json(); 
+    showToast(j.ok ? 'MQTT saved. Reboot to apply.' : 'MQTT save failed');
+  }catch(_){ showToast('MQTT save error'); }
 });
 
 // Local ping probe (works in AP, doesn’t require Internet)

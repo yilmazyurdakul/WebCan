@@ -91,6 +91,11 @@ static bool ackMode = true;
 static bool printFrames = true;    
 static uint16_t currentKbps = 500;
 
+// --- NEW: Dynamic Manipulation State ---
+static bool manipEnabled = false;
+static uint8_t manipFilterByte = 0x21; // The byte to look for at index 0
+static uint8_t manipByteIndex = 4;     // The byte position to change (0 to 7)
+static uint8_t manipNewValue = 0x00;   // The new hex value to inject
 // ================== Wi-Fi configs in flash ==================
 struct ApConfig
 {
@@ -362,6 +367,16 @@ static void startWiFi()
 // ================== HTTP (serves PROGMEM INDEX_HTML + JSON API) ==================
 static void setupHttp()
 {
+  // POST /api/can/manip
+  http.on("/api/can/manip", HTTP_POST, []()
+  {
+    if (http.hasArg("enable")) manipEnabled = (http.arg("enable") == "1");
+    if (http.hasArg("filter")) manipFilterByte = (uint8_t)strtol(http.arg("filter").c_str(), NULL, 16);
+    if (http.hasArg("index")) manipByteIndex = (uint8_t)constrain(http.arg("index").toInt(), 0, 7);
+    if (http.hasArg("val")) manipNewValue = (uint8_t)strtol(http.arg("val").c_str(), NULL, 16);
+
+    http.send(200, "application/json", "{\"ok\":1}");
+  });
   // POST /api/can/bridge?enable=1
   http.on("/api/can/bridge", HTTP_POST, []()
   {
@@ -591,12 +606,17 @@ static void canTask(void*){
     while (canReady && can1.available() && drained < maxDrain) {
       can1.receive(rx);
       
+      // --- DYNAMIC Payload Manipulation ---
+      if (manipEnabled && rx.len > manipByteIndex && rx.data[0] == manipFilterByte) {
+        rx.data[manipByteIndex] = manipNewValue; 
+      }
+
       // -- THE BRIDGE --
       if (bridgeMode && ackMode) {
         can2.tryToSend(rx); 
       }
 
-      // Forward to Web UI
+      // --- Forward ALL read data to Web UI ---
       FrameLite f{};
       f.id = rx.id; f.len = rx.len; f.flags = (rx.ext?1:0) | (rx.rtr?2:0);
       memcpy(f.data, rx.data, rx.len);
@@ -612,12 +632,17 @@ static void canTask(void*){
     while (canReady && can2.available() && drained < maxDrain) {
       can2.receive(rx);
       
+      // --- DYNAMIC Payload Manipulation ---
+      if (manipEnabled && rx.len > manipByteIndex && rx.data[0] == manipFilterByte) {
+        rx.data[manipByteIndex] = manipNewValue; 
+      }
+
       // -- THE BRIDGE --
       if (bridgeMode && ackMode) {
         can1.tryToSend(rx); 
       }
 
-      // Forward to Web UI (Optional: Add a bus tag if you want to distinguish them)
+      // --- Forward ALL read data to Web UI ---
       FrameLite f{};
       f.id = rx.id; f.len = rx.len; f.flags = (rx.ext?1:0) | (rx.rtr?2:0);
       memcpy(f.data, rx.data, rx.len);
@@ -633,6 +658,7 @@ static void canTask(void*){
     else taskYIELD();
   }
 }
+
 // ================== Net Task (Core 0) ==================
 static void netTask(void*){
   // WS batching config (same idea as before)

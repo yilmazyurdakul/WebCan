@@ -118,6 +118,16 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <button id="overrideBtn" title="When ON, each ID shows a single updating row">Override: OFF</button>
       </div>
 
+<div class="group" id="manipgrp" style="margin-left:12px; padding-left:12px; border-left:1px solid var(--border);">
+        <span class="label">If Byte[0] == </span>
+        <input id="m_filter" type="text" style="width:40px; padding:4px;" value="21" placeholder="Hex" maxlength="2">
+        <span class="label">, Set Byte[</span>
+        <input id="m_idx" type="number" style="width:40px; padding:4px;" min="0" max="7" value="4">
+        <span class="label">] to </span>
+        <input id="m_val" type="text" style="width:40px; padding:4px;" value="00" placeholder="Hex" maxlength="2">
+        <button id="manipBtn" onclick="toggleManip()">Enable Rule</button>
+      </div>
+
       <div class="group" id="filegrp" style="margin-left:auto">
         <span class="label">Filename:</span>
         <input id="logName" type="text" placeholder="trip_2025_10_15.csv" spellcheck="false">
@@ -952,6 +962,39 @@ async function toggleBridge() {
     appendStatusRow('[bridge] toggle error');
   }
 }
+
+// ========== Dynamic Manipulation Control ==========
+let manipActive = false;
+async function toggleManip() {
+  manipActive = !manipActive;
+  const btn = document.getElementById('manipBtn');
+  btn.textContent = manipActive ? 'Rule Active' : 'Enable Rule';
+  btn.style.outline = manipActive ? '2px solid var(--accent2)' : '';
+
+  // Get values from the inputs
+  const filter = document.getElementById('m_filter').value || '00';
+  const idx = document.getElementById('m_idx').value || '0';
+  const val = document.getElementById('m_val').value || '00';
+
+  try {
+    const body = new URLSearchParams({ 
+      enable: manipActive ? '1' : '0',
+      filter: filter,
+      index: idx,
+      val: val
+    });
+    const r = await fetch('/api/can/manip', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
+    const j = await r.json();
+    
+    if (j.ok) {
+      appendStatusRow('[manip] ' + (manipActive ? `ON: If B[0]==0x${filter}, set B[${idx}]=0x${val}` : 'OFF'));
+    }
+  } catch(e) {
+    appendStatusRow('[manip] toggle error');
+  }
+}
+
+
 // Set initial button state outline
 document.getElementById('bridgeBtn').style.outline = '2px solid var(--accent2)';
 

@@ -52,17 +52,69 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   .ok{outline:2px solid var(--accent2)}
   #filegrp input{width:220px}
   #settingsBtn{margin-left:auto}
-  .modal{position:fixed; inset:0; background:rgba(0,0,0,.5); display:none; align-items:center; justify-content:center; padding:20px}
+
+.modal{
+  position:fixed;
+  inset:0;
+  z-index:9999;
+  background:rgba(0,0,0,.5);
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:20px;
+}
+
+.form-grid{
+  display:grid;
+  grid-template-columns:140px 1fr 140px 1fr;
+  gap:12px 16px;
+  align-items:center;
+}
+
+.form-grid label{
+  width:auto;
+  margin:0;
+}
+
+.form-grid input{
+  width:100%;
+}
+
+@media (max-width:900px){
+  .form-grid{
+    grid-template-columns:1fr;
+  }
+}
+
+.card{
+  width:min(1100px,95vw);
+}
+
+.actions{
+  display:flex;
+  justify-content:flex-end;
+  margin-top:16px;
+}
   .modal.open{display:flex}
   .card{background:#0f172a; border:1px solid var(--border); border-radius:12px; width:min(900px,98vw); padding:16px; color:#e6edf3}
   .card h3{margin:8px 0 12px 0}
-  .grid{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+ .grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:20px;
+  align-items:start;
+}
+
+.grid-full{
+  grid-column:1 / -1;
+}
   .row{display:flex; gap:8px; align-items:center}
   .row label{width:90px; font-size:12px; color:#aab3c2}
   .actions{display:flex; gap:8px; justify-content:flex-end; margin-top:12px}
   .badge{font-size:12px; color:#aab3c2}
   .sep{height:1px; background:#192030; margin:12px 0}
   .help{font-size:12px; color:#94a3b8}
+
   #toast{position:fixed; right:12px; bottom:12px; background:#0b1220; border:1px solid var(--border); color:#e6edf3; padding:10px 12px; border-radius:8px; display:none}
 </style></head>
 <body>
@@ -125,10 +177,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       </div>
 
 <div class="group" id="manipgrp" style="margin-left:12px; padding-left:12px; border-left:1px solid var(--border);">
-        <span class="label">If Byte[0] == </span>
+        <span class="label">Byte[0] </span>
         <input id="m_filter" type="text" style="width:40px; padding:4px;" value="21" placeholder="Hex" maxlength="2">
         <span class="label">, Set Byte[</span>
-        <input id="m_idx" type="number" style="width:40px; padding:4px;" min="0" max="7" value="4">
+        <input id="m_idx" type="text" style="width:40px; padding:4px;" min="0" max="7" value="4">
         <span class="label">] to </span>
         <input id="m_val" type="text" style="width:40px; padding:4px;" value="00" placeholder="Hex" maxlength="2">
         <button id="manipBtn" onclick="toggleManip()">Enable Rule</button>
@@ -192,7 +244,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       <h3 style="margin:0">Settings</h3>
       <span class="badge" id="netBadge"></span>
       <div style="margin-left:auto"><button id="closeSettings">Close</button></div>
-    </div>
+    </div> 
     <div class="sep"></div>
     <div class="grid">
       <section>
@@ -200,7 +252,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <div class="row"><label>SSID</label><input id="ap_ssid" type="text" maxlength="32"></div>
         <div class="row"><label>Password</label><input id="ap_pass" type="password" maxlength="64" placeholder="min 8 chars"></div>
         <div class="actions">
-          <button id="saveAp">Save AP</button>
+        <button id="saveAp">Save AP</button>
         </div>
         <div class="help">Used when device runs its own Wi-Fi network.</div>
       </section>
@@ -216,20 +268,42 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <div class="help">On next boot, device tries to join your Wi-Fi if enabled + SSID set.</div>
       </section>
 
-<section>
-        <h4 style="margin:4px 0 8px 0">MQTT Broker</h4>
-        <div class="row"><label>Enable</label><input id="mqtt_enabled" type="checkbox"></div>
-        <div class="row"><label>Server/IP</label><input id="mqtt_server" type="text" maxlength="64" placeholder="broker.hivemq.com"></div>
-        <div class="row"><label>Port</label><input id="mqtt_port" type="number" value="1883" style="width:80px"></div>
-        <div class="row"><label>Username</label><input id="mqtt_user" type="text" maxlength="32" placeholder="(optional)"></div>
-        <div class="row"><label>Password</label><input id="mqtt_pass" type="password" maxlength="64" placeholder="(optional)"></div>
-       <div class="row"><label title="MQTT -> CAN1">Sub Topic</label><input id="mqtt_subTopic" type="text" maxlength="64" placeholder="webcan/tx"></div>
-        <div class="row"><label title="CAN1 -> MQTT">Pub Topic</label><input id="mqtt_pubTopic" type="text" maxlength="64" placeholder="webcan/rx"></div>
-        <div class="actions">
-          <button id="saveMqtt">Save MQTT</button>
-        </div>
-        <div class="help">Connects to broker via Wi-Fi STA to bridge CAN frames.</div>
-      </section>
+<section class="grid-full">
+  <h4 style="margin:4px 0 12px 0">MQTT Broker</h4>
+
+  <div class="form-grid">
+
+    <label>Enable</label>
+    <input id="mqtt_enabled" type="checkbox">
+
+    <label>Server/IP</label>
+    <input id="mqtt_server" type="text">
+
+    <label>Port</label>
+    <input id="mqtt_port" type="number">
+
+    <label>Username</label>
+    <input id="mqtt_user" type="text">
+
+    <label>Password</label>
+    <input id="mqtt_pass" type="password">
+
+    <label>Sub Topic</label>
+    <input id="mqtt_subTopic" type="text">
+
+    <label>Pub Topic</label>
+    <input id="mqtt_pubTopic" type="text">
+
+  </div>
+
+  <div class="actions">
+    <button id="saveMqtt">Save MQTT</button>
+  </div>
+
+  <div class="help">
+    Connects to broker via Wi-Fi STA to bridge CAN frames.
+  </div>
+</section>
     </div>
 
     <div class="sep"></div>

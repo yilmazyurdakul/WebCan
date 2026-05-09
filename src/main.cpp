@@ -21,12 +21,30 @@
 #include <SPIFFS.h>
 #include <string.h>
 #include "webInterface.h" // Provides INDEX_HTML (PROGMEM)
-
 #include <PubSubClient.h>
+#include <WiFiClientSecure.h>
 
-// --- NEW: MQTT Globals ---
-WiFiClient wifiClient;
-PubSubClient mqtt(wifiClient);
+#include "time.h"
+
+void syncTime()
+{
+  // Sync time via NTP
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  Serial.print("Waiting for NTP time sync: ");
+  time_t now = time(nullptr);
+  while (now < 8 * 3600 * 2)
+  { // Wait until time is updated
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println(" Time synced!");
+}
+
+WiFiClientSecure secureClient;
+PubSubClient mqtt(secureClient);
+
+const char *root_ca = nullptr;
 
 static QueueHandle_t qMqttTx = nullptr;  // Queue for forwarding CAN -> MQTT
 static TaskHandle_t hMqttTask = nullptr; // Handle for the MQTT RTOS task
@@ -35,13 +53,13 @@ static TaskHandle_t hMqttTask = nullptr; // Handle for the MQTT RTOS task
 static void mqttCallback(char *topic, byte *payload, unsigned int length);
 static void mqttTask(void *pv);
 
-enum SystemStatus {
-  STATUS_IDLE,        // Wi-Fi AP mode, no connections
-  STATUS_CONNECTING,  // Trying to join Wi-Fi/MQTT
-  STATUS_CONNECTED,   // Everything OK (MQTT + Wi-Fi)
-  STATUS_ERROR        // CAN Hardware error
+enum SystemStatus
+{
+  STATUS_IDLE,       // Wi-Fi AP mode, no connections
+  STATUS_CONNECTING, // Trying to join Wi-Fi/MQTT
+  STATUS_CONNECTED,  // Everything OK (MQTT + Wi-Fi)
+  STATUS_ERROR       // CAN Hardware error
 };
-
 
 // ---------- RTOS bridge types & forwards ----------
 struct FrameLite
@@ -161,56 +179,52 @@ static void setDefaultMqttConfig()
   gMqttCfg.enabled = false;
 }
 
-
-static void ledStatusTask(void* pv) {
+static void ledStatusTask(void *pv)
+{
   const int LED_PIN = 5;
   pinMode(LED_PIN, OUTPUT);
 
-  for (;;) {
-    int pulseCount = 1;
-    int pulseDelay = 500;
-    int cycleDelay = 500;
+  for (;;)
+  {
+    int pulses = 1;
+    int ms = 50;
+    int gap = 2000;
 
-    // --- LOGIC: Define Patterns based on System Health ---
-    if (!canReady) {
-      // FAST RAPID BLINK: CAN Hardware Issue
-      pulseCount = 5;
-      pulseDelay = 50;
-      cycleDelay = 200;
-    } 
-    else if (WiFi.status() != WL_CONNECTED) {
-      // SLOW BREATH: Wi-Fi Disconnected / AP Mode
-      pulseCount = 1;
-      pulseDelay = 1000;
-      cycleDelay = 1000;
+    if (!canReady)
+    {
+      pulses = 5;
+      ms = 50;
+      gap = 200; // Rapid blink: CAN Error
     }
-    else if (!mqtt.connected() && gMqttCfg.enabled) {
-      // DOUBLE BLINK: Wi-Fi OK, but MQTT failing
-      pulseCount = 2;
-      pulseDelay = 150;
-      cycleDelay = 800;
+    else if (WiFi.status() != WL_CONNECTED)
+    {
+      pulses = 1;
+      ms = 1000;
+      gap = 1000; // Slow breath: No Wi-Fi
     }
-    else {
-      // SINGLE SHORT BLINK: All Systems Nominal
-      pulseCount = 1;
-      pulseDelay = 50;
-      cycleDelay = 2000;
+    else if (!mqtt.connected() && gMqttCfg.enabled)
+    {
+      pulses = 2;
+      ms = 150;
+      gap = 800; // Double blink: No MQTT
+    }
+    else
+    {
+      pulses = 1;
+      ms = 50;
+      gap = 2500; // Short blip: All OK
     }
 
-    // --- EXECUTION: Perform the pulses ---
-    for (int i = 0; i < pulseCount; i++) {
+    for (int i = 0; i < pulses; i++)
+    {
       digitalWrite(LED_PIN, HIGH);
-      vTaskDelay(pdMS_TO_TICKS(pulseDelay));
+      vTaskDelay(pdMS_TO_TICKS(ms));
       digitalWrite(LED_PIN, LOW);
-      vTaskDelay(pdMS_TO_TICKS(pulseDelay));
+      vTaskDelay(pdMS_TO_TICKS(ms));
     }
-    
-    // Gap between patterns
-    vTaskDelay(pdMS_TO_TICKS(cycleDelay));
+    vTaskDelay(pdMS_TO_TICKS(gap));
   }
 }
-
-
 static bool loadMqttConfig()
 {
   if (!SPIFFS.begin(true))
@@ -415,6 +429,95 @@ static bool saveStaConfig(const String &ssid, const String &pass, bool enabled)
   pass.toCharArray(gStaCfg.pass, sizeof(gStaCfg.pass));
   gStaCfg.enabled = enabled;
   return true;
+}
+
+/**
+ * Helper to load a CA certificate from SPIFFS into a global buffer.
+ */
+const char *loadCertificateBuffer(const char *path)
+{
+  Serial.printf("\n[Cert] Attempting to load from SPIFFS: %s\n", path);
+
+  if (!SPIFFS.exists(path))
+  {
+    Serial.println("[Cert] ERROR: File does not exist!");
+    return nullptr;
+  }
+
+  File file = SPIFFS.open(path, "r");
+  if (!file)
+  {
+    Serial.println("[Cert] ERROR: Failed to open file for reading!");
+    return nullptr;
+  }
+
+  size_t fileSize = file.size();
+  Serial.printf("[Cert] File opened successfully. Size: %d bytes\n", fileSize);
+
+  if (fileSize == 0)
+  {
+    Serial.println("[Cert] ERROR: File is completely empty (0 bytes)!");
+    file.close();
+    return nullptr;
+  }
+
+  char *buf = new char[fileSize + 1];
+  if (!buf)
+  {
+    Serial.println("[Cert] ERROR: RAM Memory allocation failed!");
+    file.close();
+    return nullptr;
+  }
+
+  file.readBytes(buf, fileSize);
+  buf[fileSize] = '\0'; // Null terminator required for mbedTLS
+  file.close();
+
+  Serial.println("[Cert] SUCCESS! Certificate loaded into RAM.");
+  Serial.println("=== CERTIFICATE PREVIEW ===");
+
+  // Print the first 60 and last 60 characters to verify it's a valid PEM
+  String certStr = String(buf);
+  if (certStr.length() > 120)
+  {
+    Serial.println(certStr.substring(0, 60));
+    Serial.println("... [snip] ...");
+    Serial.println(certStr.substring(certStr.length() - 60));
+  }
+  else
+  {
+    Serial.println(certStr);
+  }
+  Serial.println("===========================\n");
+
+  return buf;
+}
+void setupSecureMQTT()
+{
+  Serial.println("[MQTTS] Initializing Secure MQTT...");
+
+  // 1. Sync Time (Required for SSL/TLS)
+  syncTime();
+
+  // 2. Load the CA Certificate
+  root_ca = loadCertificateBuffer("/isrgrootx1.pem"); // Ensure this filename exactly matches what is in SPIFFS
+
+  if (root_ca)
+  {
+    secureClient.setCACert(root_ca);
+    Serial.println("[MQTTS] CA Certificate applied to secure client.");
+  }
+  else
+  {
+    Serial.println("[MQTTS] FATAL: Failed to load CA! Handshake will fail (State -2).");
+  }
+
+  // 3. Set Broker and larger buffer for SSL
+  mqtt.setServer(gMqttCfg.server, gMqttCfg.port);
+  mqtt.setCallback(mqttCallback);
+  mqtt.setBufferSize(2048);
+
+  Serial.printf("[MQTTS] Configured for Broker: %s:%d\n", gMqttCfg.server, gMqttCfg.port);
 }
 
 // ================== PRETTY WS frame line (UI-compatible) ==================
@@ -736,25 +839,23 @@ static void setupHttp()
 
 static void startRtosPipelines()
 {
-  // depth N means queue can buffer N frames
   qRx = xQueueCreate(512, sizeof(FrameLite));
   qTx = xQueueCreate(128, sizeof(FrameLite));
-  qMqttTx = xQueueCreate(128, sizeof(FrameLite)); // NEW: Queue for CAN -> MQTT
+  qMqttTx = xQueueCreate(128, sizeof(FrameLite));
   eg = xEventGroupCreate();
 
-  // CAN Task: pin to APP CPU (1) on ESP32
-  xTaskCreatePinnedToCore(canTask, "canTask", 4096, nullptr, 20, &hCanTask, 1);
-
-  // Net Task: pin to PRO CPU (0)
-  xTaskCreatePinnedToCore(netTask, "netTask", 6144, nullptr, 18, &hNetTask, 0);
-
-  // NEW: MQTT Task: pin to PRO CPU (0) with lower priority than netTask
-  xTaskCreatePinnedToCore(mqttTask, "mqttTask", 5120, nullptr, 17, &hMqttTask, 0);
-
-  // Priority 1 is plenty for a status LED
-xTaskCreatePinnedToCore(ledStatusTask, "ledStatusTask", 1024, nullptr, 1, nullptr, 1);
+  // CAN Task is fine at 4096
+  xTaskCreatePinnedToCore(canTask, "can", 4096, NULL, 20, NULL, 1);
+  
+  // Net Task bumped slightly for safety
+  xTaskCreatePinnedToCore(netTask, "net", 6144, NULL, 18, NULL, 0);
+  
+  // MQTT Task bumped to 8192 (SSL/TLS uses a LOT of RAM to process incoming messages)
+  xTaskCreatePinnedToCore(mqttTask, "mqtt", 8192, NULL, 17, NULL, 0);
+  
+  // LED Task bumped from 1024 to 2048 to fix the "Stack canary watchpoint" crash
+  xTaskCreatePinnedToCore(ledStatusTask, "led", 2048, NULL, 1, NULL, 1);
 }
-
 // ================== Setup ==================
 void setup()
 {
@@ -795,16 +896,15 @@ void setup()
   ws.broadcastTXT("ESP32 + ACAN2515 Web Terminal (web-only)");
   reconfigure(currentKbps);
 
-  // Initialize MQTT Server if configured
+  // Initialize Secure MQTT Server if configured
   if (gMqttCfg.enabled && strlen(gMqttCfg.server) > 0)
   {
-    mqtt.setServer(gMqttCfg.server, gMqttCfg.port);
-    mqtt.setCallback(mqttCallback);
-    mqtt.setBufferSize(1024);
+    setupSecureMQTT();
   }
 
   // Start FreeRTOS pipelines
   startRtosPipelines();
+  syncTime();
 }
 
 // ================== Loop ==================
@@ -1021,18 +1121,20 @@ static void netTask(void *)
       lastKA = now;
     }
 
-      // --- MQTT & Socket Status Broadcast ---
+    // --- MQTT & Socket Status Broadcast ---
     static uint32_t lastStatusUpdate = 0;
-    if (now - lastStatusUpdate >= 2000) { // Update every 2 seconds
+    if (now - lastStatusUpdate >= 2000)
+    { // Update every 2 seconds
       char statusBuf[64];
       snprintf(statusBuf, sizeof(statusBuf), "{\"type\":\"status\",\"mqtt\":%d}", mqtt.connected() ? 1 : 0);
-      
-      if (ws.connectedClients() > 0) {
+
+      if (ws.connectedClients() > 0)
+      {
         ws.broadcastTXT(statusBuf);
       }
       lastStatusUpdate = now;
     }
-    
+
     // Drain some frames for ~5ms
     uint32_t tStart = millis();
     FrameLite f;
@@ -1131,95 +1233,77 @@ static void mqttCallback(char *topic, byte *payload, unsigned int length)
 // ================== MQTT Task (Core 0) ==================
 static void mqttTask(void *pv)
 {
-  uint32_t lastReconnectAttempt = 0;
-
   for (;;)
   {
-    if (gMqttCfg.enabled && strlen(gMqttCfg.server) > 0 && WiFi.status() == WL_CONNECTED)
+    vTaskDelay(pdMS_TO_TICKS(10)); // Feed Watchdog
+
+    if (WiFi.status() == WL_CONNECTED && gMqttCfg.enabled)
     {
       if (!mqtt.connected())
       {
-        uint32_t now = millis();
-        if (now - lastReconnectAttempt > 5000 || lastReconnectAttempt == 0)
+        Serial.println("[MQTTS] Attempting secure connection...");
+
+        // Generate a unique client ID to prevent broker kick-loops
+        String clientId = "WebCan_" + String(ESP.getEfuseMac(), HEX);
+
+        // Connect with or without credentials based on your settings
+        bool connected = false;
+        if (strlen(gMqttCfg.user) > 0)
         {
-          lastReconnectAttempt = now;
-          Serial.printf("[MQTT] Connecting to %s:%d...\n", gMqttCfg.server, gMqttCfg.port);
+          connected = mqtt.connect(clientId.c_str(), gMqttCfg.user, gMqttCfg.pass);
+        }
+        else
+        {
+          connected = mqtt.connect(clientId.c_str());
+        }
 
-          String clientId = "WebCan_";
-          clientId += String(ESP.getEfuseMac(), HEX);
-
-          bool connected = (strlen(gMqttCfg.user) > 0) ? mqtt.connect(clientId.c_str(), gMqttCfg.user, gMqttCfg.pass) : mqtt.connect(clientId.c_str());
-
-          if (connected)
-          {
-            Serial.println("[MQTT] Connected successfully!");
-
-            // --- CRITICAL FIX ---
-            // Force clean const char* and trim any hidden characters (\r, \n, spaces)
-            String safeTopic = String(gMqttCfg.subTopic);
-            safeTopic.trim();
-
-            if (safeTopic.length() > 0)
-            {
-              mqtt.subscribe(safeTopic.c_str(), 0); // 0 specifies QoS level 0
-              Serial.printf("[MQTT] Subscribed to strict topic: '%s'\n", safeTopic.c_str());
-            }
-          }
+        if (connected)
+        {
+          mqtt.subscribe(gMqttCfg.subTopic);
+          Serial.println("[MQTTS] Connected & Encrypted");
+        }
+        else
+        {
+          Serial.printf("[MQTTS] Failed, state=%d\n", mqtt.state());
+          vTaskDelay(pdMS_TO_TICKS(5000)); // Wait 5s before retry
         }
       }
       else
       {
-        // --- Process Incoming MQTT ---
         mqtt.loop();
 
-        // --- Process Outgoing MQTT (CAN -> Broker) ---
-        FrameLite outFrame;
-        // Drain up to 10 frames per tick to prevent blocking
-        for (int i = 0; i < 10; i++)
+        // Process Outgoing CAN -> MQTT (Drain qMqttTx)
+        FrameLite out;
+        int processed = 0;
+        // Limit to 20 frames per cycle to prevent Watchdog triggers during high bus load
+        while (xQueueReceive(qMqttTx, &out, 0) == pdTRUE && processed < 20)
         {
-          if (xQueueReceive(qMqttTx, &outFrame, 0) == pdTRUE)
-          {
+          processed++;
 
-            // Format ID (Standard vs Extended)
-            char idStr[10];
-            if (fl_ext(outFrame))
-              snprintf(idStr, sizeof(idStr), "%08lX", outFrame.id);
-            else
-              snprintf(idStr, sizeof(idStr), "%03lX", outFrame.id);
-
-            // Format Data array into space-separated string
-            char dataStr[32] = {0};
-            for (int d = 0; d < outFrame.len; d++)
-            {
-              char hexByte[4];
-              snprintf(hexByte, sizeof(hexByte), "%02X", outFrame.data[d]);
-              strcat(dataStr, hexByte);
-              if (d < outFrame.len - 1)
-                strcat(dataStr, " ");
-            }
-
-            // Construct exact JSON string
-            char jsonBuf[256];
-            snprintf(jsonBuf, sizeof(jsonBuf),
-                     "{\"MessageType\":\"internal.debug.can.frame.send.v1\",\"Payload\":{\"canId\":\"%s\",\"canFrame\":\"%s\"}}",
-                     idStr, dataStr);
-
-            // Prepare clean PubTopic
-            String safePubTopic = String(gMqttCfg.pubTopic);
-            safePubTopic.trim();
-            if (safePubTopic.length() == 0)
-              safePubTopic = "webcan/rx"; // Fallback just in case
-
-            // Publish to broker
-            mqtt.publish(safePubTopic.c_str(), jsonBuf);
-          }
+          char idStr[10];
+          if (fl_ext(out))
+            snprintf(idStr, sizeof(idStr), "%08lX", out.id);
           else
+            snprintf(idStr, sizeof(idStr), "%03lX", out.id);
+
+          char dataStr[32] = {0};
+          for (int d = 0; d < out.len; d++)
           {
-            break; // Queue is empty, exit loop
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%02X%s", out.data[d], (d < out.len - 1) ? " " : "");
+            strcat(dataStr, hex);
           }
+
+          char jsonBuf[256];
+          snprintf(jsonBuf, sizeof(jsonBuf),
+                   "{\"MessageType\":\"internal.debug.can.frame.send.v1\",\"Payload\":{\"canId\":\"%s\",\"canFrame\":\"%s\"}}",
+                   idStr, dataStr);
+
+          String pubT = String(gMqttCfg.pubTopic);
+          pubT.trim();
+          mqtt.publish(pubT.c_str(), jsonBuf);
         }
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(20));
   }
 }

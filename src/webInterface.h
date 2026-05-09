@@ -68,7 +68,13 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <body>
 <header>
   <strong>WebCan Terminal</strong>
+  
+  <span style="margin-left: 10px; color: var(--muted); font-size: 12px;">WS:</span>
   <span id="status">connecting…</span>
+
+  <span style="margin-left: 15px; color: var(--muted); font-size: 12px;">MQTT:</span>
+  <span id="mqttDot" style="height:10px; width:10px; background-color:#ef4444; border-radius:50%; display:inline-block; margin-left:4px;" title="MQTT Status"></span>
+
   <div style="margin-left:auto; display:flex; gap:10px;">
     <button id="sequencerBtn" style="border-color:var(--accent); color:var(--accent)">Sequencer</button>
     <button id="settingsBtn">Settings</button>
@@ -368,6 +374,10 @@ let sends = []; // Array<{id, ext, rtr, data, dlc, ts}>
 const idHistory = document.getElementById('idHistory');
 const dataHistory = document.getElementById('dataHistory');
 const historyBtn = document.getElementById('historyBtn');
+
+// Add this to your WebSocket onmessage handler logic
+const mqttDot = document.getElementById('mqttDot');
+
 
 function loadSends(){
   try { sends = JSON.parse(store.getItem(LS_KEY_SENDS) || '[]'); }
@@ -859,6 +869,14 @@ ws.onclose= ()=> { statusEl.textContent='disconnected'; updateStartEnabled(); up
 ws.onerror= ()=> { statusEl.textContent='socket error'; updateStartEnabled(); updateSendEnabled(); };
 ws.onmessage = (ev) => {
   if (ev.data === '{"type":"ka"}' || ev.data === 'KA' || ev.data === 'KA\n') return; // ignore keep-alive
+
+  if (ev.data.startsWith('{')) {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'status') {
+      mqttDot.style.backgroundColor = msg.mqtt ? 'var(--accent2)' : 'var(--danger)';
+      return;
+    }
+  }
 
   wsBuf += ev.data.replace(/\r/g, '');
 

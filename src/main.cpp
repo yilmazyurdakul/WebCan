@@ -28,36 +28,44 @@
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 
-static QueueHandle_t qMqttTx = nullptr;   // Queue for forwarding CAN -> MQTT
-static TaskHandle_t hMqttTask = nullptr;  // Handle for the MQTT RTOS task
+static QueueHandle_t qMqttTx = nullptr;  // Queue for forwarding CAN -> MQTT
+static TaskHandle_t hMqttTask = nullptr; // Handle for the MQTT RTOS task
 
 // Forward declarations for MQTT
-static void mqttCallback(char* topic, byte* payload, unsigned int length);
-static void mqttTask(void* pv);
+static void mqttCallback(char *topic, byte *payload, unsigned int length);
+static void mqttTask(void *pv);
+
+enum SystemStatus {
+  STATUS_IDLE,        // Wi-Fi AP mode, no connections
+  STATUS_CONNECTING,  // Trying to join Wi-Fi/MQTT
+  STATUS_CONNECTED,   // Everything OK (MQTT + Wi-Fi)
+  STATUS_ERROR        // CAN Hardware error
+};
 
 
 // ---------- RTOS bridge types & forwards ----------
-struct FrameLite {
+struct FrameLite
+{
   uint32_t id;
-  uint8_t  len;    // 0..8
-  uint8_t  flags;  // bit0=ext, bit1=rtr
-  uint8_t  data[8];
+  uint8_t len;   // 0..8
+  uint8_t flags; // bit0=ext, bit1=rtr
+  uint8_t data[8];
 };
-inline bool fl_ext(const FrameLite& f){ return (f.flags & 0x01) != 0; }
-inline bool fl_rtr(const FrameLite& f){ return (f.flags & 0x02) != 0; }
+inline bool fl_ext(const FrameLite &f) { return (f.flags & 0x01) != 0; }
+inline bool fl_rtr(const FrameLite &f) { return (f.flags & 0x02) != 0; }
 
 // Forward declarations so they exist before startRtosPipelines()
-static void canTask(void* pv);
-static void netTask(void* pv);
+static void canTask(void *pv);
+static void netTask(void *pv);
 static void startRtosPipelines();
 
 // Queues: adjust sizes to your bus rate & RAM
-static QueueHandle_t qRx = nullptr;   // FrameLite from CAN -> Net
-static QueueHandle_t qTx = nullptr;   // FrameLite from Net -> CAN
+static QueueHandle_t qRx = nullptr; // FrameLite from CAN -> Net
+static QueueHandle_t qTx = nullptr; // FrameLite from Net -> CAN
 
 // Event group: bit 0 = at least one WS client
 static EventGroupHandle_t eg = nullptr;
-static const EventBits_t BIT_WS_HAS_CLIENT = (1<<0);
+static const EventBits_t BIT_WS_HAS_CLIENT = (1 << 0);
 
 // Task handles (optional)
 static TaskHandle_t hCanTask = nullptr;
@@ -100,9 +108,9 @@ static bool reconfigure(uint16_t kbps);
 
 // ================== CAN state ==================
 static bool canReady = false;
-static bool bridgeMode = true;     // NEW: Toggle for bi-directional routing
-static bool ackMode = true;        
-static bool printFrames = true;    
+static bool bridgeMode = true; // NEW: Toggle for bi-directional routing
+static bool ackMode = true;
+static bool printFrames = true;
 static uint16_t currentKbps = 500;
 
 // --- NEW: Dynamic Manipulation State ---
@@ -153,47 +161,113 @@ static void setDefaultMqttConfig()
   gMqttCfg.enabled = false;
 }
 
+
+static void ledStatusTask(void* pv) {
+  const int LED_PIN = 5;
+  pinMode(LED_PIN, OUTPUT);
+
+  for (;;) {
+    int pulseCount = 1;
+    int pulseDelay = 500;
+    int cycleDelay = 500;
+
+    // --- LOGIC: Define Patterns based on System Health ---
+    if (!canReady) {
+      // FAST RAPID BLINK: CAN Hardware Issue
+      pulseCount = 5;
+      pulseDelay = 50;
+      cycleDelay = 200;
+    } 
+    else if (WiFi.status() != WL_CONNECTED) {
+      // SLOW BREATH: Wi-Fi Disconnected / AP Mode
+      pulseCount = 1;
+      pulseDelay = 1000;
+      cycleDelay = 1000;
+    }
+    else if (!mqtt.connected() && gMqttCfg.enabled) {
+      // DOUBLE BLINK: Wi-Fi OK, but MQTT failing
+      pulseCount = 2;
+      pulseDelay = 150;
+      cycleDelay = 800;
+    }
+    else {
+      // SINGLE SHORT BLINK: All Systems Nominal
+      pulseCount = 1;
+      pulseDelay = 50;
+      cycleDelay = 2000;
+    }
+
+    // --- EXECUTION: Perform the pulses ---
+    for (int i = 0; i < pulseCount; i++) {
+      digitalWrite(LED_PIN, HIGH);
+      vTaskDelay(pdMS_TO_TICKS(pulseDelay));
+      digitalWrite(LED_PIN, LOW);
+      vTaskDelay(pdMS_TO_TICKS(pulseDelay));
+    }
+    
+    // Gap between patterns
+    vTaskDelay(pdMS_TO_TICKS(cycleDelay));
+  }
+}
+
+
 static bool loadMqttConfig()
 {
-  if (!SPIFFS.begin(true)) return false;
-  if (!SPIFFS.exists(MQTT_CFG_PATH)) {
+  if (!SPIFFS.begin(true))
+    return false;
+  if (!SPIFFS.exists(MQTT_CFG_PATH))
+  {
     setDefaultMqttConfig();
     return true;
   }
   File f = SPIFFS.open(MQTT_CFG_PATH, "r");
-  if (!f) {
+  if (!f)
+  {
     setDefaultMqttConfig();
     return false;
   }
-  String server = f.readStringUntil('\n'); server.trim();
-  String portStr = f.readStringUntil('\n'); portStr.trim();
-  String user = f.readStringUntil('\n'); user.trim();
-  String pass = f.readStringUntil('\n'); pass.trim();
-  String sub = f.readStringUntil('\n'); sub.trim();
-  String pub = f.readStringUntil('\n'); pub.trim(); // NEW: Read PubTopic
-  String en = f.readStringUntil('\n');   en.trim();
+  String server = f.readStringUntil('\n');
+  server.trim();
+  String portStr = f.readStringUntil('\n');
+  portStr.trim();
+  String user = f.readStringUntil('\n');
+  user.trim();
+  String pass = f.readStringUntil('\n');
+  pass.trim();
+  String sub = f.readStringUntil('\n');
+  sub.trim();
+  String pub = f.readStringUntil('\n');
+  pub.trim(); // NEW: Read PubTopic
+  String en = f.readStringUntil('\n');
+  en.trim();
   f.close();
 
   server.toCharArray(gMqttCfg.server, sizeof(gMqttCfg.server));
   gMqttCfg.port = portStr.toInt() > 0 ? portStr.toInt() : 1883;
   user.toCharArray(gMqttCfg.user, sizeof(gMqttCfg.user));
   pass.toCharArray(gMqttCfg.pass, sizeof(gMqttCfg.pass));
-  
-  if (sub.length() > 0) sub.toCharArray(gMqttCfg.subTopic, sizeof(gMqttCfg.subTopic));
-  else strncpy(gMqttCfg.subTopic, "webcan/tx", sizeof(gMqttCfg.subTopic));
-  
-  if (pub.length() > 0) pub.toCharArray(gMqttCfg.pubTopic, sizeof(gMqttCfg.pubTopic));
-  else strncpy(gMqttCfg.pubTopic, "webcan/rx", sizeof(gMqttCfg.pubTopic));
-  
+
+  if (sub.length() > 0)
+    sub.toCharArray(gMqttCfg.subTopic, sizeof(gMqttCfg.subTopic));
+  else
+    strncpy(gMqttCfg.subTopic, "webcan/tx", sizeof(gMqttCfg.subTopic));
+
+  if (pub.length() > 0)
+    pub.toCharArray(gMqttCfg.pubTopic, sizeof(gMqttCfg.pubTopic));
+  else
+    strncpy(gMqttCfg.pubTopic, "webcan/rx", sizeof(gMqttCfg.pubTopic));
+
   gMqttCfg.enabled = (en == "1");
   return true;
 }
 
 static bool saveMqttConfig(const String &server, uint16_t port, const String &user, const String &pass, const String &sub, const String &pub, bool enabled)
 {
-  if (!SPIFFS.begin(true)) return false;
+  if (!SPIFFS.begin(true))
+    return false;
   File f = SPIFFS.open(MQTT_CFG_PATH, "w");
-  if (!f) return false;
+  if (!f)
+    return false;
   f.println(server);
   f.println(port);
   f.println(user);
@@ -230,11 +304,11 @@ static const byte MCP2515_MOSI = 13;
 static const byte MCP2515_MISO = 12;
 
 // CAN 1
-static const byte MCP2515_1_CS  = 26;
+static const byte MCP2515_1_CS = 26;
 static const byte MCP2515_1_INT = 25;
 
 // CAN 2 (Add your specific pins here)
-static const byte MCP2515_2_CS  = 33; 
+static const byte MCP2515_2_CS = 33;
 static const byte MCP2515_2_INT = 27;
 
 // ================== ACAN2515 Instances ==================
@@ -266,11 +340,15 @@ static bool loadApConfig()
     setDefaultApConfig();
     return false;
   }
-  String ssid = f.readStringUntil('\n'); ssid.trim();
-  String pass = f.readStringUntil('\n'); pass.trim();
+  String ssid = f.readStringUntil('\n');
+  ssid.trim();
+  String pass = f.readStringUntil('\n');
+  pass.trim();
   f.close();
-  if (ssid.isEmpty()) ssid = AP_SSID;
-  if (pass.isEmpty()) pass = AP_PASSWORD;
+  if (ssid.isEmpty())
+    ssid = AP_SSID;
+  if (pass.isEmpty())
+    pass = AP_PASSWORD;
   ssid.toCharArray(gApCfg.ssid, sizeof(gApCfg.ssid));
   pass.toCharArray(gApCfg.pass, sizeof(gApCfg.pass));
   return true;
@@ -310,9 +388,12 @@ static bool loadStaConfig()
     setDefaultStaConfig();
     return false;
   }
-  String ssid = f.readStringUntil('\n'); ssid.trim();
-  String pass = f.readStringUntil('\n'); pass.trim();
-  String en = f.readStringUntil('\n');   en.trim();
+  String ssid = f.readStringUntil('\n');
+  ssid.trim();
+  String pass = f.readStringUntil('\n');
+  pass.trim();
+  String en = f.readStringUntil('\n');
+  en.trim();
   f.close();
   ssid.toCharArray(gStaCfg.ssid, sizeof(gStaCfg.ssid));
   pass.toCharArray(gStaCfg.pass, sizeof(gStaCfg.pass));
@@ -390,9 +471,11 @@ static bool reconfigure(uint16_t kbps)
   settings.mReceiveBufferSize = 128;
 
   // Initialize CAN 1
-  const uint16_t ec1 = can1.begin(settings, []{ can1.isr(); });
+  const uint16_t ec1 = can1.begin(settings, []
+                                  { can1.isr(); });
   // Initialize CAN 2
-  const uint16_t ec2 = can2.begin(settings, []{ can2.isr(); });
+  const uint16_t ec2 = can2.begin(settings, []
+                                  { can2.isr(); });
 
   if (ec1 != 0 || ec2 != 0)
   {
@@ -402,7 +485,7 @@ static bool reconfigure(uint16_t kbps)
     canReady = false;
     return false;
   }
-  
+
   canReady = true;
   currentKbps = kbps;
   char ok[64];
@@ -417,25 +500,27 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
 {
   switch (type)
   {
-    case WStype_CONNECTED:
+  case WStype_CONNECTED:
+  {
+    ws.sendTXT(num, "WebCAN ready (web-only).");
+    if (eg)
+      xEventGroupSetBits(eg, BIT_WS_HAS_CLIENT);
+    wsFlushIfNeeded(ws, true);
+    break;
+  }
+  case WStype_DISCONNECTED:
+  {
+    if (ws.connectedClients() == 0 && eg)
     {
-      ws.sendTXT(num, "WebCAN ready (web-only).");
-      if (eg) xEventGroupSetBits(eg, BIT_WS_HAS_CLIENT);
-      wsFlushIfNeeded(ws, true);
-      break;
+      xEventGroupClearBits(eg, BIT_WS_HAS_CLIENT);
     }
-    case WStype_DISCONNECTED:
-    {
-      if (ws.connectedClients() == 0 && eg) {
-        xEventGroupClearBits(eg, BIT_WS_HAS_CLIENT);
-      }
-      break;
-    }
-    case WStype_TEXT:
-      // web-only: ignore text/SLCAN; UI uses HTTP
-      break;
-    default:
-      break;
+    break;
+  }
+  case WStype_TEXT:
+    // web-only: ignore text/SLCAN; UI uses HTTP
+    break;
+  default:
+    break;
   }
 }
 
@@ -466,18 +551,17 @@ static void startWiFi()
 // ================== HTTP (serves PROGMEM INDEX_HTML + JSON API) ==================
 static void setupHttp()
 {
-// ================== MQTT config API ==================
+  // ================== MQTT config API ==================
   http.on("/api/mqttcfg", HTTP_GET, []()
-  {
+          {
     Serial.println("API GET: /api/mqttcfg requested by browser");
     char buf[512];
     snprintf(buf, sizeof(buf), "{\"server\":\"%s\",\"port\":%u,\"user\":\"%s\",\"pass\":\"%s\",\"subTopic\":\"%s\",\"pubTopic\":\"%s\",\"enabled\":%s}",
              gMqttCfg.server, gMqttCfg.port, gMqttCfg.user, gMqttCfg.pass, gMqttCfg.subTopic, gMqttCfg.pubTopic, gMqttCfg.enabled ? "true" : "false");
-    http.send(200, "application/json", buf);
-  });
+    http.send(200, "application/json", buf); });
 
   http.on("/api/mqttcfg", HTTP_POST, []()
-  {
+          {
     Serial.println("API POST: /api/mqttcfg received new data");
     if (!http.hasArg("enabled") || !http.hasArg("server") || !http.hasArg("port")) { 
       http.send(400,"application/json","{\"ok\":0,\"err\":\"missing_params\"}"); return; 
@@ -500,76 +584,65 @@ static void setupHttp()
       http.send(200,"application/json","{\"ok\":1}");
     } else {
       http.send(500,"application/json","{\"ok\":0,\"err\":\"save_failed\"}");
-    }
-  });
+    } });
 
   // POST /api/can/manip
   http.on("/api/can/manip", HTTP_POST, []()
-  {
+          {
     if (http.hasArg("enable")) manipEnabled = (http.arg("enable") == "1");
     if (http.hasArg("filter")) manipFilterByte = (uint8_t)strtol(http.arg("filter").c_str(), NULL, 16);
     if (http.hasArg("index")) manipByteIndex = (uint8_t)constrain(http.arg("index").toInt(), 0, 7);
     if (http.hasArg("val")) manipNewValue = (uint8_t)strtol(http.arg("val").c_str(), NULL, 16);
 
-    http.send(200, "application/json", "{\"ok\":1}");
-  });
+    http.send(200, "application/json", "{\"ok\":1}"); });
   // POST /api/can/bridge?enable=1
   http.on("/api/can/bridge", HTTP_POST, []()
-  {
+          {
     if (http.hasArg("enable")) {
       bridgeMode = (http.arg("enable") == "1");
     }
     char buf[64];
     snprintf(buf, sizeof(buf), "{\"ok\":1,\"bridge\":%s}", bridgeMode ? "true" : "false");
-    http.send(200, "application/json", buf);
-  });
+    http.send(200, "application/json", buf); });
   http.on("/", HTTP_GET, []()
-  {
-    http.send_P(200, "text/html", INDEX_HTML);
-  });
+          { http.send_P(200, "text/html", INDEX_HTML); });
 
   // Simple local health probe
   http.on("/api/ping", HTTP_GET, []()
-  {
-    http.send(200, "application/json", "{\"ok\":1}");
-  });
+          { http.send(200, "application/json", "{\"ok\":1}"); });
 
   // Reset device
   http.on("/api/reset", HTTP_POST, []()
-  {
+          {
     http.send(200, "application/json", "{\"ok\":1,\"msg\":\"Rebooting...\"}");
     delay(300);
-    ESP.restart();
-  });
+    ESP.restart(); });
 
   // AP config
   http.on("/api/apcfg", HTTP_GET, []()
-  {
+          {
     char buf[200];
     snprintf(buf, sizeof(buf), "{\"ssid\":\"%s\",\"pass\":\"%s\"}", gApCfg.ssid, gApCfg.pass);
-    http.send(200, "application/json", buf);
-  });
+    http.send(200, "application/json", buf); });
   http.on("/api/apcfg", HTTP_POST, []()
-  {
+          {
     if (!http.hasArg("ssid") || !http.hasArg("pass")) { http.send(400,"application/json","{\"ok\":0,\"err\":\"missing_params\"}"); return; }
     String ssid=http.arg("ssid"); ssid.trim();
     String pass=http.arg("pass"); pass.trim();
     if (ssid.length()<1 || ssid.length()>32) { http.send(400,"application/json","{\"ok\":0,\"err\":\"ssid_len\"}"); return; }
     if (pass.length()<8 || pass.length()>64) { http.send(400,"application/json","{\"ok\":0,\"err\":\"pass_len\"}"); return; }
     if (saveApConfig(ssid, pass)) http.send(200,"application/json","{\"ok\":1}");
-    else                          http.send(500,"application/json","{\"ok\":0,\"err\":\"save_failed\"}");
-  });
+    else                          http.send(500,"application/json","{\"ok\":0,\"err\":\"save_failed\"}"); });
 
   // STA config
   http.on("/api/stacfg", HTTP_GET, []()
-  {
+          {
     char buf[256];
     snprintf(buf, sizeof(buf), "{\"ssid\":\"%s\",\"pass\":\"%s\",\"enabled\":%s}",
              gStaCfg.ssid, gStaCfg.pass, gStaCfg.enabled ? "true" : "false");
-    http.send(200, "application/json", buf);
-  });
+    http.send(200, "application/json", buf); });
   http.on("/api/stacfg", HTTP_POST, []()
-  {
+          {
     if (!http.hasArg("enabled") || !http.hasArg("ssid") || !http.hasArg("pass")) { http.send(400,"application/json","{\"ok\":0,\"err\":\"missing_params\"}"); return; }
     String ssid=http.arg("ssid"); ssid.trim();
     String pass=http.arg("pass"); pass.trim();
@@ -577,13 +650,12 @@ static void setupHttp()
     if (ssid.length()>32) { http.send(400,"application/json","{\"ok\":0,\"err\":\"ssid_len\"}"); return; }
     if (!ssid.isEmpty() && (pass.length()>64)) { http.send(400,"application/json","{\"ok\":0,\"err\":\"pass_len\"}"); return; }
     if (saveStaConfig(ssid, pass, enabled)) http.send(200,"application/json","{\"ok\":1}");
-    else                                    http.send(500,"application/json","{\"ok\":0,\"err\":\"save_failed\"}");
-  });
+    else                                    http.send(500,"application/json","{\"ok\":0,\"err\":\"save_failed\"}"); });
 
   // ===== CAN control API (no SLCAN) =====
   // POST /api/can/open  form: kbps=<10|20|50|100|125|250|500|800|1000>&mode=<normal|listen>
   http.on("/api/can/open", HTTP_POST, []()
-  {
+          {
     if (!http.hasArg("kbps") || !http.hasArg("mode")) { http.send(400, "application/json", "{\"ok\":0,\"err\":\"missing_params\"}"); return; }
     uint16_t kbps = (uint16_t) http.arg("kbps").toInt();
     String mode = http.arg("mode"); mode.toLowerCase();
@@ -592,19 +664,17 @@ static void setupHttp()
     }
     ackMode = (mode=="normal");
     if (!reconfigure(kbps)) { http.send(500,"application/json","{\"ok\":0,\"err\":\"acan_init\"}"); return; }
-    http.send(200, "application/json", "{\"ok\":1}");
-  });
+    http.send(200, "application/json", "{\"ok\":1}"); });
 
   // POST /api/can/close
   http.on("/api/can/close", HTTP_POST, []()
-  {
+          {
     canReady = false; // soft-close; tasks stop reading
-    http.send(200, "application/json", "{\"ok\":1}");
-  });
+    http.send(200, "application/json", "{\"ok\":1}"); });
 
   // POST /api/can/send (form): id,ext(0/1),rtr(0/1),dlc(0..8),data hex concat or space-separated
   http.on("/api/can/send", HTTP_POST, []()
-  {
+          {
     if (!canReady) { http.send(400,"application/json","{\"ok\":0,\"err\":\"not_ready\"}"); return; }
     if (!http.hasArg("id") || !http.hasArg("dlc")) { http.send(400,"application/json","{\"ok\":0,\"err\":\"missing_params\"}"); return; }
 
@@ -659,18 +729,18 @@ static void setupHttp()
 
     if (xQueueSend(qTx, &f, 0) == pdTRUE) http.send(200,"application/json","{\"ok\":1}");
                                           
-    else                                  http.send(503,"application/json","{\"ok\":0,\"err\":\"tx_queue_full\"}");
-  });
+    else                                  http.send(503,"application/json","{\"ok\":0,\"err\":\"tx_queue_full\"}"); });
 
   http.begin();
 }
 
-static void startRtosPipelines() {
+static void startRtosPipelines()
+{
   // depth N means queue can buffer N frames
   qRx = xQueueCreate(512, sizeof(FrameLite));
   qTx = xQueueCreate(128, sizeof(FrameLite));
   qMqttTx = xQueueCreate(128, sizeof(FrameLite)); // NEW: Queue for CAN -> MQTT
-  eg  = xEventGroupCreate();
+  eg = xEventGroupCreate();
 
   // CAN Task: pin to APP CPU (1) on ESP32
   xTaskCreatePinnedToCore(canTask, "canTask", 4096, nullptr, 20, &hCanTask, 1);
@@ -680,8 +750,10 @@ static void startRtosPipelines() {
 
   // NEW: MQTT Task: pin to PRO CPU (0) with lower priority than netTask
   xTaskCreatePinnedToCore(mqttTask, "mqttTask", 5120, nullptr, 17, &hMqttTask, 0);
-}
 
+  // Priority 1 is plenty for a status LED
+xTaskCreatePinnedToCore(ledStatusTask, "ledStatusTask", 1024, nullptr, 1, nullptr, 1);
+}
 
 // ================== Setup ==================
 void setup()
@@ -696,12 +768,15 @@ void setup()
 
   loadApConfig();
   loadStaConfig();
-  
+
   // --- FIX: Load MQTT config from SPIFFS on boot ---
-  if (loadMqttConfig()) {
-    Serial.printf("Loaded MQTT Config - Server: %s, Port: %d, Enabled: %d\n", 
+  if (loadMqttConfig())
+  {
+    Serial.printf("Loaded MQTT Config - Server: %s, Port: %d, Enabled: %d\n",
                   gMqttCfg.server, gMqttCfg.port, gMqttCfg.enabled);
-  } else {
+  }
+  else
+  {
     Serial.println("No MQTT config found, using defaults.");
   }
 
@@ -720,9 +795,9 @@ void setup()
   ws.broadcastTXT("ESP32 + ACAN2515 Web Terminal (web-only)");
   reconfigure(currentKbps);
 
-  
-// Initialize MQTT Server if configured
-  if (gMqttCfg.enabled && strlen(gMqttCfg.server) > 0) {
+  // Initialize MQTT Server if configured
+  if (gMqttCfg.enabled && strlen(gMqttCfg.server) > 0)
+  {
     mqtt.setServer(gMqttCfg.server, gMqttCfg.port);
     mqtt.setCallback(mqttCallback);
     mqtt.setBufferSize(1024);
@@ -733,26 +808,35 @@ void setup()
 }
 
 // ================== Loop ==================
-void loop(){
-  // Nothing heavy here; tasks do the work 
+void loop()
+{
+  // Nothing heavy here; tasks do the work
   vTaskDelay(1);
 }
 
 // ================== CAN Task (Core 1) ==================
-static void canTask(void*){
+static void canTask(void *)
+{
   const TickType_t rxPollDelay = pdMS_TO_TICKS(1);
-  const uint16_t   maxDrain    = 256;             
+  const uint16_t maxDrain = 256;
 
-  for(;;){
+  for (;;)
+  {
     // 1) Drain TX queue (Data sent FROM the Web UI or MQTT RX)
     FrameLite txf;
-    while (xQueueReceive(qTx, &txf, 0) == pdTRUE) {
+    while (xQueueReceive(qTx, &txf, 0) == pdTRUE)
+    {
       CANMessage tx;
-      tx.id  = txf.id; tx.ext = fl_ext(txf); tx.rtr = fl_rtr(txf); tx.len = txf.len;
+      tx.id = txf.id;
+      tx.ext = fl_ext(txf);
+      tx.rtr = fl_rtr(txf);
+      tx.len = txf.len;
       memcpy(tx.data, txf.data, txf.len);
 
-      for (int i=0;i<3;i++){
-        if (can1.tryToSend(tx)) break;
+      for (int i = 0; i < 3; i++)
+      {
+        if (can1.tryToSend(tx))
+          break;
         vTaskDelay(pdMS_TO_TICKS(1));
       }
     }
@@ -761,35 +845,48 @@ static void canTask(void*){
     CANMessage rx;
 
     // 2) Drain CAN1 RX and Bridge to CAN2
-    while (canReady && can1.available() && drained < maxDrain) {
+    while (canReady && can1.available() && drained < maxDrain)
+    {
       can1.receive(rx);
-      
-      if (manipEnabled && rx.len > manipByteIndex && rx.data[0] == manipFilterByte) {
-        rx.data[manipByteIndex] = manipNewValue; 
+
+      if (manipEnabled && rx.len > manipByteIndex && rx.data[0] == manipFilterByte)
+      {
+        rx.data[manipByteIndex] = manipNewValue;
       }
 
-      if (bridgeMode && ackMode) {
-        can2.tryToSend(rx); 
+      if (bridgeMode && ackMode)
+      {
+        can2.tryToSend(rx);
       }
 
       // Prepare frame for queues
       FrameLite f{};
-      f.id = rx.id; f.len = rx.len; f.flags = (rx.ext?1:0) | (rx.rtr?2:0);
+      f.id = rx.id;
+      f.len = rx.len;
+      f.flags = (rx.ext ? 1 : 0) | (rx.rtr ? 2 : 0);
       memcpy(f.data, rx.data, rx.len);
 
       // Push to Web UI Queue
-      if (xQueueSend(qRx, &f, 0) != pdTRUE) {
-        FrameLite dummy; xQueueReceive(qRx, &dummy, 0);
+      if (xQueueSend(qRx, &f, 0) != pdTRUE)
+      {
+        FrameLite dummy;
+        xQueueReceive(qRx, &dummy, 0);
         xQueueSend(qRx, &f, 0);
       }
 
       // --- NEW: Push to MQTT Queue ---
-      if (gMqttCfg.enabled) {
-        if (xQueueSend(qMqttTx, &f, 0) == pdTRUE) {
+      if (gMqttCfg.enabled)
+      {
+        if (xQueueSend(qMqttTx, &f, 0) == pdTRUE)
+        {
           static int debugCount1 = 0;
-          if (debugCount1++ % 100 == 0) Serial.println("[CAN1 -> MQTT Queue] OK");
-        } else {
-          FrameLite dummy; xQueueReceive(qMqttTx, &dummy, 0);
+          if (debugCount1++ % 100 == 0)
+            Serial.println("[CAN1 -> MQTT Queue] OK");
+        }
+        else
+        {
+          FrameLite dummy;
+          xQueueReceive(qMqttTx, &dummy, 0);
           xQueueSend(qMqttTx, &f, 0);
         }
       }
@@ -798,33 +895,46 @@ static void canTask(void*){
     }
 
     // 3) Drain CAN2 RX and Bridge to CAN1
-    while (canReady && can2.available() && drained < maxDrain) {
+    while (canReady && can2.available() && drained < maxDrain)
+    {
       can2.receive(rx);
-      
-      if (manipEnabled && rx.len > manipByteIndex && rx.data[0] == manipFilterByte) {
-        rx.data[manipByteIndex] = manipNewValue; 
+
+      if (manipEnabled && rx.len > manipByteIndex && rx.data[0] == manipFilterByte)
+      {
+        rx.data[manipByteIndex] = manipNewValue;
       }
 
-      if (bridgeMode && ackMode) {
-        can1.tryToSend(rx); 
+      if (bridgeMode && ackMode)
+      {
+        can1.tryToSend(rx);
       }
 
       FrameLite f{};
-      f.id = rx.id; f.len = rx.len; f.flags = (rx.ext?1:0) | (rx.rtr?2:0);
+      f.id = rx.id;
+      f.len = rx.len;
+      f.flags = (rx.ext ? 1 : 0) | (rx.rtr ? 2 : 0);
       memcpy(f.data, rx.data, rx.len);
 
       // Push to Web UI Queue
-      if (xQueueSend(qRx, &f, 0) != pdTRUE) {
-        FrameLite dummy; xQueueReceive(qRx, &dummy, 0);
+      if (xQueueSend(qRx, &f, 0) != pdTRUE)
+      {
+        FrameLite dummy;
+        xQueueReceive(qRx, &dummy, 0);
         xQueueSend(qRx, &f, 0);
       }
 
-      if (gMqttCfg.enabled) {
-        if (xQueueSend(qMqttTx, &f, 0) == pdTRUE) {
+      if (gMqttCfg.enabled)
+      {
+        if (xQueueSend(qMqttTx, &f, 0) == pdTRUE)
+        {
           static int debugCount2 = 0;
-          if (debugCount2++ % 100 == 0) Serial.println("[CAN2 -> MQTT Queue] OK");
-        } else {
-          FrameLite dummy; xQueueReceive(qMqttTx, &dummy, 0);
+          if (debugCount2++ % 100 == 0)
+            Serial.println("[CAN2 -> MQTT Queue] OK");
+        }
+        else
+        {
+          FrameLite dummy;
+          xQueueReceive(qMqttTx, &dummy, 0);
           xQueueSend(qMqttTx, &f, 0);
         }
       }
@@ -832,48 +942,70 @@ static void canTask(void*){
       drained++;
     }
 
-    if (drained == 0) vTaskDelay(rxPollDelay);
-    else taskYIELD();
+    if (drained == 0)
+      vTaskDelay(rxPollDelay);
+    else
+      taskYIELD();
   }
 }
 // ================== Net Task (Core 0) ==================
-static void netTask(void*){
-  // WS batching config (same idea as before)
-  static char  wsBuf[1536];
-  size_t       wsLen = 0;
-  uint32_t     lastFlush = millis();
+static void netTask(void *)
+{
 
-  auto flush = [&](){
-    if (wsLen == 0) return;
+  // WS batching config (same idea as before)
+  static char wsBuf[1536];
+  size_t wsLen = 0;
+  uint32_t lastFlush = millis();
+
+  auto flush = [&]()
+  {
+    if (wsLen == 0)
+      return;
     EventBits_t b = xEventGroupGetBits(eg);
-    if (b & BIT_WS_HAS_CLIENT) {
-      ws.broadcastTXT((const uint8_t*)wsBuf, wsLen);
+    if (b & BIT_WS_HAS_CLIENT)
+    {
+      ws.broadcastTXT((const uint8_t *)wsBuf, wsLen);
     }
     wsLen = 0;
     lastFlush = millis();
   };
 
   // pretty line builder for FrameLite
-  auto appendPretty = [&](const FrameLite& f){
+  auto appendPretty = [&](const FrameLite &f)
+  {
     char line[160];
     char idbuf[10];
-    if (fl_ext(f)) snprintf(idbuf, sizeof(idbuf), "%08lX", f.id);
-    else           snprintf(idbuf, sizeof(idbuf), "%03lX",  f.id);
+    if (fl_ext(f))
+      snprintf(idbuf, sizeof(idbuf), "%08lX", f.id);
+    else
+      snprintf(idbuf, sizeof(idbuf), "%03lX", f.id);
     int n = snprintf(line, sizeof(line), "[ID:0x%s %s %s DLC:%u Data:",
-        idbuf, fl_ext(f)?"EXT":"STD", fl_rtr(f)?"RTR":"DAT", f.len);
-    for (uint8_t i=0;i<f.len && i<8;i++) n += snprintf(line+n, sizeof(line)-n, " %02X", f.data[i]);
-    if (n+2 < (int)sizeof(line)) { line[n++]=']'; line[n++]='\n'; }
-    if (wsLen + (size_t)n > sizeof(wsBuf)) flush();
-    if ((size_t)n <= sizeof(wsBuf) - wsLen) {
-      memcpy(wsBuf + wsLen, line, n); wsLen += (size_t)n;
-    } else {
+                     idbuf, fl_ext(f) ? "EXT" : "STD", fl_rtr(f) ? "RTR" : "DAT", f.len);
+    for (uint8_t i = 0; i < f.len && i < 8; i++)
+      n += snprintf(line + n, sizeof(line) - n, " %02X", f.data[i]);
+    if (n + 2 < (int)sizeof(line))
+    {
+      line[n++] = ']';
+      line[n++] = '\n';
+    }
+    if (wsLen + (size_t)n > sizeof(wsBuf))
+      flush();
+    if ((size_t)n <= sizeof(wsBuf) - wsLen)
+    {
+      memcpy(wsBuf + wsLen, line, n);
+      wsLen += (size_t)n;
+    }
+    else
+    {
       // doesn't fit: flush then direct
-      flush(); ws.broadcastTXT((const uint8_t*)line, (size_t)n);
+      flush();
+      ws.broadcastTXT((const uint8_t *)line, (size_t)n);
     }
   };
 
   const TickType_t tick5 = pdMS_TO_TICKS(5);
-  for(;;){
+  for (;;)
+  {
     // Service servers
     http.handleClient();
     ws.loop();
@@ -881,32 +1013,51 @@ static void netTask(void*){
     // Keepalive (optional; or use a SW timer)
     static uint32_t lastKA = 0;
     uint32_t now = millis();
-    if (now - lastKA >= 5000) {
+    if (now - lastKA >= 5000)
+    {
       static const char ka[] = "{\"type\":\"ka\"}";
-      if (ws.connectedClients() > 0) ws.broadcastTXT(ka, sizeof(ka)-1);
+      if (ws.connectedClients() > 0)
+        ws.broadcastTXT(ka, sizeof(ka) - 1);
       lastKA = now;
     }
 
+      // --- MQTT & Socket Status Broadcast ---
+    static uint32_t lastStatusUpdate = 0;
+    if (now - lastStatusUpdate >= 2000) { // Update every 2 seconds
+      char statusBuf[64];
+      snprintf(statusBuf, sizeof(statusBuf), "{\"type\":\"status\",\"mqtt\":%d}", mqtt.connected() ? 1 : 0);
+      
+      if (ws.connectedClients() > 0) {
+        ws.broadcastTXT(statusBuf);
+      }
+      lastStatusUpdate = now;
+    }
+    
     // Drain some frames for ~5ms
     uint32_t tStart = millis();
     FrameLite f;
-    while ( (millis() - tStart) < 5 ) {
-      if (xQueueReceive(qRx, &f, 0) != pdTRUE) break;
+    while ((millis() - tStart) < 5)
+    {
+      if (xQueueReceive(qRx, &f, 0) != pdTRUE)
+        break;
       appendPretty(f);
     }
 
     // Time-based flush (8–10 ms)
-    if (now - lastFlush >= 8) flush();
+    if (now - lastFlush >= 8)
+      flush();
 
     vTaskDelay(tick5); // yields, ~5 ms period
   }
 }
 
 // ================== MQTT Callback (Broker -> ESP32 -> CAN + WEB) ==================
-static void mqttCallback(char* topic, byte* payload, unsigned int length) {
+static void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
   String msg = "";
-  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
-  
+  for (unsigned int i = 0; i < length; i++)
+    msg += (char)payload[i];
+
   Serial.printf("\n[MQTT RX] Topic: %s\n", topic);
   Serial.printf("[MQTT RX] Raw Payload: %s\n", msg.c_str());
 
@@ -916,7 +1067,8 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
   // 2. Parse ID
   uint32_t id = 0;
   int idIdx = msg.indexOf("ID: ");
-  if (idIdx > 0) {
+  if (idIdx > 0)
+  {
     int idEnd = msg.indexOf(" ", idIdx + 4);
     String idStr = msg.substring(idIdx + 4, idEnd);
     id = strtoul(idStr.c_str(), NULL, 16);
@@ -925,19 +1077,25 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
   // 3. Parse DLC
   uint8_t dlc = 0;
   int dlcIdx = msg.indexOf("DLC: ");
-  if (dlcIdx > 0) {
+  if (dlcIdx > 0)
+  {
     dlc = msg.substring(dlcIdx + 5, msg.indexOf(" ", dlcIdx + 5)).toInt();
-    if (dlc > 8) dlc = 8;
+    if (dlc > 8)
+      dlc = 8;
   }
 
   // 4. Parse Data bytes
   uint8_t data[8] = {0};
   int dataIdx = msg.indexOf("Data: ");
-  if (dataIdx > 0) {
+  if (dataIdx > 0)
+  {
     int curr = dataIdx + 6;
-    for (int i = 0; i < dlc && curr < msg.length(); i++) {
-      while (curr < msg.length() && msg[curr] == ' ') curr++;
-      if (curr + 1 < msg.length()) {
+    for (int i = 0; i < dlc && curr < msg.length(); i++)
+    {
+      while (curr < msg.length() && msg[curr] == ' ')
+        curr++;
+      if (curr + 1 < msg.length())
+      {
         String byteStr = msg.substring(curr, curr + 2);
         data[i] = (uint8_t)strtoul(byteStr.c_str(), NULL, 16);
         curr += 2;
@@ -949,101 +1107,119 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
   FrameLite f{};
   f.id = id;
   f.len = dlc;
-  f.flags = (ext ? 1 : 0); 
+  f.flags = (ext ? 1 : 0);
   memcpy(f.data, data, dlc);
 
   // --- ACTION 1: Push to CAN Bus (qTx) ---
-  if (xQueueSend(qTx, &f, 0) == pdTRUE) {
+  if (xQueueSend(qTx, &f, 0) == pdTRUE)
+  {
     Serial.println("[MQTT] -> Queued for CAN TX");
   }
 
   // --- ACTION 2: Push to Web Terminal (qRx) ---
   // This makes the MQTT-injected message appear in your browser table
-  if (xQueueSend(qRx, &f, 0) != pdTRUE) {
-    FrameLite dummy; 
+  if (xQueueSend(qRx, &f, 0) != pdTRUE)
+  {
+    FrameLite dummy;
     xQueueReceive(qRx, &dummy, 0); // Drop oldest if full
     xQueueSend(qRx, &f, 0);
   }
-  
+
   Serial.printf("[MQTT PARSED] -> ID: 0x%lX | DLC: %d\n", id, dlc);
 }
 
 // ================== MQTT Task (Core 0) ==================
-static void mqttTask(void* pv){
+static void mqttTask(void *pv)
+{
   uint32_t lastReconnectAttempt = 0;
 
-  for(;;){
-    if (gMqttCfg.enabled && strlen(gMqttCfg.server) > 0 && WiFi.status() == WL_CONNECTED) {
-      if (!mqtt.connected()) {
+  for (;;)
+  {
+    if (gMqttCfg.enabled && strlen(gMqttCfg.server) > 0 && WiFi.status() == WL_CONNECTED)
+    {
+      if (!mqtt.connected())
+      {
         uint32_t now = millis();
-        if (now - lastReconnectAttempt > 5000 || lastReconnectAttempt == 0) {
+        if (now - lastReconnectAttempt > 5000 || lastReconnectAttempt == 0)
+        {
           lastReconnectAttempt = now;
           Serial.printf("[MQTT] Connecting to %s:%d...\n", gMqttCfg.server, gMqttCfg.port);
-          
+
           String clientId = "WebCan_";
           clientId += String(ESP.getEfuseMac(), HEX);
 
-          bool connected = (strlen(gMqttCfg.user) > 0) ? 
-            mqtt.connect(clientId.c_str(), gMqttCfg.user, gMqttCfg.pass) : 
-            mqtt.connect(clientId.c_str());
+          bool connected = (strlen(gMqttCfg.user) > 0) ? mqtt.connect(clientId.c_str(), gMqttCfg.user, gMqttCfg.pass) : mqtt.connect(clientId.c_str());
 
-          if (connected) {
+          if (connected)
+          {
             Serial.println("[MQTT] Connected successfully!");
-            
+
             // --- CRITICAL FIX ---
             // Force clean const char* and trim any hidden characters (\r, \n, spaces)
             String safeTopic = String(gMqttCfg.subTopic);
-            safeTopic.trim(); 
-            
-            if (safeTopic.length() > 0) {
+            safeTopic.trim();
+
+            if (safeTopic.length() > 0)
+            {
               mqtt.subscribe(safeTopic.c_str(), 0); // 0 specifies QoS level 0
               Serial.printf("[MQTT] Subscribed to strict topic: '%s'\n", safeTopic.c_str());
             }
           }
         }
-      } else {
+      }
+      else
+      {
         // --- Process Incoming MQTT ---
         mqtt.loop();
 
         // --- Process Outgoing MQTT (CAN -> Broker) ---
         FrameLite outFrame;
         // Drain up to 10 frames per tick to prevent blocking
-        for (int i = 0; i < 10; i++) {
-          if (xQueueReceive(qMqttTx, &outFrame, 0) == pdTRUE) {
-            
+        for (int i = 0; i < 10; i++)
+        {
+          if (xQueueReceive(qMqttTx, &outFrame, 0) == pdTRUE)
+          {
+
             // Format ID (Standard vs Extended)
             char idStr[10];
-            if (fl_ext(outFrame)) snprintf(idStr, sizeof(idStr), "%08lX", outFrame.id);
-            else snprintf(idStr, sizeof(idStr), "%03lX", outFrame.id);
+            if (fl_ext(outFrame))
+              snprintf(idStr, sizeof(idStr), "%08lX", outFrame.id);
+            else
+              snprintf(idStr, sizeof(idStr), "%03lX", outFrame.id);
 
             // Format Data array into space-separated string
             char dataStr[32] = {0};
-            for (int d = 0; d < outFrame.len; d++) {
+            for (int d = 0; d < outFrame.len; d++)
+            {
               char hexByte[4];
               snprintf(hexByte, sizeof(hexByte), "%02X", outFrame.data[d]);
               strcat(dataStr, hexByte);
-              if (d < outFrame.len - 1) strcat(dataStr, " "); 
+              if (d < outFrame.len - 1)
+                strcat(dataStr, " ");
             }
 
-            // Construct exact JSON string 
+            // Construct exact JSON string
             char jsonBuf[256];
-            snprintf(jsonBuf, sizeof(jsonBuf), 
-              "{\"MessageType\":\"internal.debug.can.frame.send.v1\",\"Payload\":{\"canId\":\"%s\",\"canFrame\":\"%s\"}}",
-              idStr, dataStr);
+            snprintf(jsonBuf, sizeof(jsonBuf),
+                     "{\"MessageType\":\"internal.debug.can.frame.send.v1\",\"Payload\":{\"canId\":\"%s\",\"canFrame\":\"%s\"}}",
+                     idStr, dataStr);
 
             // Prepare clean PubTopic
             String safePubTopic = String(gMqttCfg.pubTopic);
             safePubTopic.trim();
-            if (safePubTopic.length() == 0) safePubTopic = "webcan/rx"; // Fallback just in case
+            if (safePubTopic.length() == 0)
+              safePubTopic = "webcan/rx"; // Fallback just in case
 
-            // Publish to broker 
+            // Publish to broker
             mqtt.publish(safePubTopic.c_str(), jsonBuf);
-          } else {
+          }
+          else
+          {
             break; // Queue is empty, exit loop
           }
         }
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(20)); 
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
 }

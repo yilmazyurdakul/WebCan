@@ -23,7 +23,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   #idlist{padding:6px 0 8px 0; overflow:auto; flex:1}
   .idrow{display:flex; align-items:center; gap:8px; padding:6px 12px; border-bottom:1px dashed #192030; font-size:13px}
   .idrow input{width:16px; height:16px}
-  .idtag{font-weight:600; color:#cbd5e1}
+  .idtag{font-weight:600; color:#cbd5e1; display:flex; align-items:center;}
   .idmeta{font-size:11px; color:#aab3c2; margin-left:auto}
   main{min-height:0;display:flex;flex-direction:column}
   #controls{flex:none;display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--border);align-items:center}
@@ -36,11 +36,13 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   .ack.on{outline:2px solid var(--accent2)} .ack.off{outline:2px solid var(--danger)}
   #term{flex:1;min-height:0;overflow:auto;background:#030712;border-top:1px solid var(--border)}
   table{width:100%; border-collapse:separate; border-spacing:0; font-size:13px}
-  thead th{position:sticky; top:0; z-index:1; text-align:left; font-weight:600; background:var(--head); color:#cbd5e1; padding:8px 10px; border-bottom:1px solid var(--border)}
+  thead th{text-align:left; font-weight:600; background:var(--head); color:#cbd5e1; padding:8px 10px; border-bottom:1px solid var(--border)}
   tbody td{padding:6px 10px; border-bottom:1px solid #0f172a; vertical-align:top}
   tbody tr:nth-child(even){background:var(--rowEven)} tbody tr:nth-child(odd){background:var(--rowOdd)}
   .col-idx{width:56px; color:#93a3b8} .col-time{width:118px; color:#a5b4fc}
-  .col-id{width:120px; font-weight:700} .col-type{width:64px} .col-rtr{width:54px} .col-dlc{width:54px}
+
+  .col-id{width:150px; font-weight:700; display:flex; align-items:center;}
+  .col-type{width:64px} .col-rtr{width:54px} .col-dlc{width:54px}
   .col-data{font-family:ui-monospace,Menlo,Consolas,monospace} .row-status td{color:#aab3c2; background:#0b1220}
   #sendbar{position:sticky; bottom:0; left:0; right:0; display:flex; gap:10px; align-items:center; padding:10px 14px; background:#0d1320; border-top:1px solid var(--border)}
   #tx_id{width:140px;}
@@ -53,6 +55,12 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   #filegrp input{width:220px}
   #settingsBtn{margin-left:auto}
 
+  /* NEW BUS BADGES */
+  .bus-badge { font-size:10px; padding:2px 5px; border-radius:4px; margin-right:6px; font-weight:800; border:1px solid var(--border); }
+  .bus-1 { background: #1e3a8a; color: #93c5fd; border-color: #1e40af; } /* CAN1 - Blue */
+  .bus-2 { background: #14532d; color: #86efac; border-color: #166534; } /* CAN2 - Green */
+  .bus-0 { background: #7e22ce; color: #d8b4fe; border-color: #6b21a8; } /* TX - Purple */
+  
 .modal{
   position:fixed;
   inset:0;
@@ -71,43 +79,19 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   align-items:center;
 }
 
-.form-grid label{
-  width:auto;
-  margin:0;
-}
+.form-grid label{ width:auto; margin:0; }
+.form-grid input{ width:100%; }
 
-.form-grid input{
-  width:100%;
-}
+@media (max-width:900px){ .form-grid{ grid-template-columns:1fr; } }
 
-@media (max-width:900px){
-  .form-grid{
-    grid-template-columns:1fr;
-  }
-}
-
-.card{
-  width:min(1100px,95vw);
-}
-
-.actions{
-  display:flex;
-  justify-content:flex-end;
-  margin-top:16px;
-}
+.card{ width:min(1100px,95vw); }
+.actions{ display:flex; justify-content:flex-end; margin-top:16px; }
   .modal.open{display:flex}
   .card{background:#0f172a; border:1px solid var(--border); border-radius:12px; width:min(900px,98vw); padding:16px; color:#e6edf3}
   .card h3{margin:8px 0 12px 0}
- .grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:20px;
-  align-items:start;
-}
+ .grid{ display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start; }
 
-.grid-full{
-  grid-column:1 / -1;
-}
+.grid-full{ grid-column:1 / -1; }
   .row{display:flex; gap:8px; align-items:center}
   .row label{width:90px; font-size:12px; color:#aab3c2}
   .actions{display:flex; gap:8px; justify-content:flex-end; margin-top:12px}
@@ -120,13 +104,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <body>
 <header>
   <strong>WebCan Terminal</strong>
-  
   <span style="margin-left: 10px; color: var(--muted); font-size: 12px;">WS:</span>
   <span id="status">connecting…</span>
-
   <span style="margin-left: 15px; color: var(--muted); font-size: 12px;">MQTT:</span>
   <span id="mqttDot" style="height:10px; width:10px; background-color:#ef4444; border-radius:50%; display:inline-block; margin-left:4px;" title="MQTT Status"></span>
-
   <div style="margin-left:auto; display:flex; gap:10px;">
     <button id="sequencerBtn" style="border-color:var(--accent); color:var(--accent)">Sequencer</button>
     <button id="settingsBtn">Settings</button>
@@ -199,17 +180,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
     <div id="term">
       <table>
-        <thead>
-          <tr>
-            <th class="col-idx">#</th>
-            <th class="col-time">Time</th>
-            <th class="col-id">ID</th>
-            <th class="col-type">Type</th>
-            <th class="col-rtr">RTR</th>
-            <th class="col-dlc">DLC</th>
-            <th class="col-data">Data</th>
-          </tr>
-        </thead>
+
         <tbody id="framebody"></tbody>
       </table>
     </div>
@@ -270,39 +241,17 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
 <section class="grid-full">
   <h4 style="margin:4px 0 12px 0">MQTT Broker</h4>
-
   <div class="form-grid">
-
-    <label>Enable</label>
-    <input id="mqtt_enabled" type="checkbox">
-
-    <label>Server/IP</label>
-    <input id="mqtt_server" type="text">
-
-    <label>Port</label>
-    <input id="mqtt_port" type="number">
-
-    <label>Username</label>
-    <input id="mqtt_user" type="text">
-
-    <label>Password</label>
-    <input id="mqtt_pass" type="password">
-
-    <label>Sub Topic</label>
-    <input id="mqtt_subTopic" type="text">
-
-    <label>Pub Topic</label>
-    <input id="mqtt_pubTopic" type="text">
-
+    <label>Enable</label><input id="mqtt_enabled" type="checkbox">
+    <label>Server/IP</label><input id="mqtt_server" type="text">
+    <label>Port</label><input id="mqtt_port" type="number">
+    <label>Username</label><input id="mqtt_user" type="text">
+    <label>Password</label><input id="mqtt_pass" type="password">
+    <label>Sub Topic</label><input id="mqtt_subTopic" type="text">
+    <label>Pub Topic</label><input id="mqtt_pubTopic" type="text">
   </div>
-
-  <div class="actions">
-    <button id="saveMqtt">Save MQTT</button>
-  </div>
-
-  <div class="help">
-    Connects to broker via Wi-Fi STA to bridge CAN frames.
-  </div>
+  <div class="actions"><button id="saveMqtt">Save MQTT</button></div>
+  <div class="help">Connects to broker via Wi-Fi STA to bridge CAN frames.</div>
 </section>
     </div>
 
@@ -417,7 +366,6 @@ const saveMqtt = document.getElementById('saveMqtt');
 const mqtt_subTopic = document.getElementById('mqtt_subTopic');
 const mqtt_pubTopic = document.getElementById('mqtt_pubTopic'); 
 
-// NEW: Sequencer Elements
 const sequencerBtn = document.getElementById('sequencerBtn');
 const sequencerModal = document.getElementById('sequencerModal');
 const closeSequencer = document.getElementById('closeSequencer');
@@ -427,7 +375,7 @@ const startSeqBtn = document.getElementById('startSeqBtn');
 const stopSeqBtn = document.getElementById('stopSeqBtn');
 const seqDelay = document.getElementById('seqDelay');
 
-// ===== Performance limits (tune as needed) =====
+// Performance limits
 const MAX_DOM_ROWS         = 1500;
 const MAX_PENDING_LINES    = 10000;
 const MAX_PROCESS_PER_TICK = 1200;
@@ -438,20 +386,16 @@ let wsBuf = '';
 let flushTimer = 0;
 let nearBottomCached = true;
 
-// ===== Sent frames cache (localStorage by default) =====
 const USE_SESSION = false; 
 const store = USE_SESSION ? sessionStorage : localStorage;
 const LS_KEY_SENDS = 'webcan_sends_v1';
 const MAX_SAVED = 100;
 
-let sends = []; // Array<{id, ext, rtr, data, dlc, ts}>
+let sends = []; 
 const idHistory = document.getElementById('idHistory');
 const dataHistory = document.getElementById('dataHistory');
 const historyBtn = document.getElementById('historyBtn');
-
-// Add this to your WebSocket onmessage handler logic
 const mqttDot = document.getElementById('mqttDot');
-
 
 function loadSends(){
   try { sends = JSON.parse(store.getItem(LS_KEY_SENDS) || '[]'); }
@@ -496,7 +440,6 @@ function rememberSend(entry){
   refreshDatalists();
 }
 
-// Quick insert: put last sent back into the inputs
 historyBtn.addEventListener('click', ()=>{
   if (!sends.length) return;
   const h = sends[0];
@@ -520,7 +463,7 @@ resetBtn.addEventListener('click', async ()=>{
   }
 });
 
-// ===== History Modal =====
+// History Modal
 const openHistoryBtn   = document.getElementById('openHistoryBtn');
 const historyModal     = document.getElementById('historyModal');
 const closeHistory     = document.getElementById('closeHistory');
@@ -580,10 +523,7 @@ histSearch.addEventListener('input', ()=> renderHistory(histSearch.value));
 clearHistoryBtn.addEventListener('click', ()=>{
   if (!sends.length) return;
   if (!confirm('Clear all history?')) return;
-  sends = [];
-  saveSends();
-  refreshDatalists();
-  renderHistory(histSearch.value);
+  sends = []; saveSends(); refreshDatalists(); renderHistory(histSearch.value);
 });
 historyTBody.addEventListener('click', async (e)=>{
   const btn = e.target.closest('button[data-act]');
@@ -605,12 +545,11 @@ historyTBody.addEventListener('click', async (e)=>{
   }
   else if (btn.dataset.act === 'del'){
     sends.splice(i, 1);
-    saveSends();
-    refreshDatalists();
-    renderHistory(histSearch.value);
+    saveSends(); refreshDatalists(); renderHistory(histSearch.value);
   }
 });
 
+// Senders
 async function sendViaApi(id, extBool, rtrBool, dataStr){
   let bytes = [];
   if (dataStr) {
@@ -638,28 +577,30 @@ async function sendViaApi(id, extBool, rtrBool, dataStr){
       appendStatusRow('[TX OK] '+(extBool?'EXT ':'STD ')+id+' dlc='+dlc);
       rememberSend({ id, ext: extBool, rtr: rtrBool, data: bytes.join(' '), dlc });
 
-      // ---- NEW: show TX frame in table + log it ----
       const idHex  = parseIdField(id) || id;
-      const idDisp = '0x' + (parseIdField(id) || idHex);
+      const idDisp = '0x' + idHex;
       const rowBytes = Array.from({length:8}, (_,i)=> bytes[i] ? bytes[i].toUpperCase().padStart(2,'0') : '');
-      incrementIdCountBatched(idDisp);
+      
+      incrementIdCountBatched(idDisp, 0); // TX bus = 0
+      
       const rowObj = {
         index: ++frameCounter,
         timePretty: fmtTime(),
-        idDisp,
+        busNum: 0, 
+        idDisp: idDisp,
         ext: extBool,
         rtr: rtrBool,
-        dlc,
+        dlc: dlc,
         bytes: rowBytes
       };
+      
       const fragTx = document.createDocumentFragment();
       if (overrideMode) upsertFrameRowBatched(rowObj, fragTx); else appendFrameRowBatched(rowObj, fragTx);
       frameBody.appendChild(fragTx);
       pruneOldRows();
       scrollBottom();
 
-      logTxFrame(parseIdField(id) || id, extBool, dlc, bytes);
-      // ----------------------------------------------
+      logTxFrame(idHex, extBool, dlc, bytes, 0);
 
       if (historyModal.classList.contains('open')) renderHistory(histSearch.value);
     } else {
@@ -668,15 +609,14 @@ async function sendViaApi(id, extBool, rtrBool, dataStr){
   }catch(_){ appendStatusRow('[TX ERROR]'); }
 }
 
-// Boot
 loadSends();
 refreshDatalists();
 
-// Override mode (SavvyCAN-like)
+// Override mode
 let overrideMode = false;
 const overrideBtn = document.getElementById('overrideBtn');
-const rowMap = new Map(); // key -> <tr>
-function makeRowKey(idDisp, ext, rtr){ return (ext ? 'E' : 'S') + '|' + idDisp.toUpperCase() + '|' + (rtr?'R':'D'); }
+const rowMap = new Map(); 
+
 overrideBtn.addEventListener('click', ()=>{
   overrideMode = !overrideMode;
   overrideBtn.textContent = 'Override: ' + (overrideMode ? 'ON' : 'OFF');
@@ -690,52 +630,72 @@ const txRtr  = document.getElementById('tx_rtr');
 const txSend = document.getElementById('tx_send');
 const dlcBadge = document.getElementById('dlc_badge');
 
-// Sidebar (unique IDs with checkboxes)
-const knownIds = new Map(); const selected = new Set();
+// CLEANED UP SIDEBAR / ID TRACKING
+const knownIds = new Map(); 
+const selected = new Set();
 function filterActive(){ return selected.size > 0; }
-function ensureIdRow(idStr){
-  if (knownIds.has(idStr)) return knownIds.get(idStr);
+
+function ensureIdRow(key, idStr, busNum){
+  if (knownIds.has(key)) return knownIds.get(key);
+  
   const row=document.createElement('div'); row.className='idrow';
   const cb=document.createElement('input'); cb.type='checkbox';
-  cb.addEventListener('change',()=>{ if(cb.checked)selected.add(idStr); else selected.delete(idStr); updateSelCount(); });
-  const tag=document.createElement('span'); tag.className='idtag'; tag.textContent=idStr;
+  
+  cb.addEventListener('change',()=>{ 
+    if(cb.checked) selected.add(key); else selected.delete(key); 
+    updateSelCount(); 
+  });
+  
+  const tag=document.createElement('span'); tag.className='idtag'; 
+  const bType = busNum === 0 ? 'TX' : 'C' + busNum;
+  tag.innerHTML=`<span class="bus-badge bus-${busNum}">${bType}</span>${idStr}`;
+  
   const meta=document.createElement('span'); meta.className='idmeta'; meta.textContent='0 msg';
   row.append(cb,tag,meta); idListEl.append(row);
-  const rec={count:0,el:row,cb:cb,meta:meta}; knownIds.set(idStr,rec); return rec;
+  
+  const rec={count:0, el:row, cb:cb, meta:meta, busNum: busNum}; 
+  knownIds.set(key,rec); 
+  return rec;
 }
-function incrementIdCountBatched(idStr){
-  const rec = ensureIdRow(idStr);
-  rec.count++;
-  pendingCountUpdates.set(idStr, rec.count);
+
+const pendingCountUpdates = new Map();
+let countRAF = null;
+
+function incrementIdCountBatched(idStr, busNum){
+  const key = `C${busNum}:${idStr}`;
+  const rec = ensureIdRow(key, idStr, busNum);
+  rec.count++; 
+  pendingCountUpdates.set(key, rec.count);
+  
   if (!countRAF) {
     countRAF = requestAnimationFrame(()=>{
-      for (const [id, cnt] of pendingCountUpdates) {
-        const r = knownIds.get(id);
-        if (r) r.meta.textContent = cnt + ' msg';
+      for (const [k, cnt] of pendingCountUpdates) { 
+        const r = knownIds.get(k); 
+        if(r) r.meta.textContent = cnt + ' msg'; 
       }
-      pendingCountUpdates.clear();
+      pendingCountUpdates.clear(); 
       countRAF = null;
     });
   }
 }
+
 function updateSelCount(){ selCountEl.textContent = selected.size>0 ? (selected.size+' selected') : 'all'; }
+
 idFilterInput.addEventListener('input',()=>{
   const q=idFilterInput.value.trim().toUpperCase();
-  for(const [idStr,rec] of knownIds.entries()){ rec.el.style.display = idStr.toUpperCase().includes(q)?'':'none'; }
+  for(const [key,rec] of knownIds.entries()){ rec.el.style.display = key.toUpperCase().includes(q)?'':'none'; }
 });
 document.getElementById('selectAllBtn').addEventListener('click',()=>{
-  selected.clear(); for(const [idStr,rec] of knownIds.entries()){ rec.cb.checked=true; selected.add(idStr); } updateSelCount();
+  selected.clear(); for(const [key,rec] of knownIds.entries()){ rec.cb.checked=true; selected.add(key); } updateSelCount();
 });
 document.getElementById('selectNoneBtn').addEventListener('click',()=>{
-  selected.clear(); for(const [idStr,rec] of knownIds.entries()){ rec.cb.checked=false; } updateSelCount();
+  selected.clear(); for(const [key,rec] of knownIds.entries()){ rec.cb.checked=false; } updateSelCount();
 });
-// Batched counter updates (DOM throttle)
-const pendingCountUpdates = new Map();
-let countRAF = null;
 
-// Table rendering
+// CLEANED UP TERMINAL TABLE RENDERERS
 let frameCounter=0;
 function fmtTime(){ const d=new Date(); const ms=String(d.getMilliseconds()).padStart(3,'0'); return d.toLocaleTimeString([], {hour12:false})+'.'+ms; }
+
 function appendStatusRow(text){
   const tr=document.createElement('tr'); tr.className='row-status';
   const td=document.createElement('td'); td.colSpan=7; td.textContent=text;
@@ -746,24 +706,32 @@ function appendStatusRowBatched(text, frag){
   const td=document.createElement('td'); td.colSpan=7; td.textContent=text;
   tr.appendChild(td); frag.appendChild(tr);
 }
+
+function makeRowKey(busNum, idDisp, ext, rtr){ 
+  return busNum + '|' + (ext ? 'E' : 'S') + '|' + idDisp.toUpperCase() + '|' + (rtr?'R':'D'); 
+}
+
 function appendFrameRowBatched(obj, frag){
   const tr=document.createElement('tr');
+  const bType = obj.busNum === 0 ? 'TX' : 'C' + obj.busNum;
   tr.innerHTML=`<td class="col-idx">${obj.index}</td>
     <td class="col-time">${obj.timePretty}</td>
-    <td class="col-id">${obj.idDisp}</td>
+    <td class="col-id"><span class="bus-badge bus-${obj.busNum}">${bType}</span>${obj.idDisp}</td>
     <td class="col-type">${obj.ext?'EXT':'STD'}</td>
     <td class="col-rtr">${obj.rtr?'RTR':'DAT'}</td>
     <td class="col-dlc">${obj.dlc}</td>
     <td class="col-data">${obj.bytes.join(' ')}</td>`;
   frag.appendChild(tr);
 }
+
 function upsertFrameRowBatched(obj, frag){
-  const key = makeRowKey(obj.idDisp, obj.ext, obj.rtr);
+  const key = makeRowKey(obj.busNum, obj.idDisp, obj.ext, obj.rtr);
   let tr = rowMap.get(key);
 
+  const bType = obj.busNum === 0 ? 'TX' : 'C' + obj.busNum;
   const html = `<td class="col-idx">${obj.index}</td>
     <td class="col-time">${obj.timePretty}</td>
-    <td class="col-id">${obj.idDisp}</td>
+    <td class="col-id"><span class="bus-badge bus-${obj.busNum}">${bType}</span>${obj.idDisp}</td>
     <td class="col-type">${obj.ext?'EXT':'STD'}</td>
     <td class="col-rtr">${obj.rtr?'RTR':'DAT'}</td>
     <td class="col-dlc">${obj.dlc}</td>
@@ -782,6 +750,7 @@ function upsertFrameRowBatched(obj, frag){
   tr.style.outline = '2px solid #3b82f6';
   setTimeout(()=>{ tr.style.outline = ''; }, 100);
 }
+
 function pruneOldRows(){
   const overshoot = frameBody.rows.length - MAX_DOM_ROWS;
   if (overshoot > 0) {
@@ -794,17 +763,15 @@ function pruneOldRows(){
     }
   }
 }
-function scrollBottom(){
-  termScroller.scrollTop = termScroller.scrollHeight;
-}
 
-// Frame parsing from firmware text (Supports optional [CAN1]/[CAN2] prefixes)
+function scrollBottom(){ termScroller.scrollTop = termScroller.scrollHeight; }
+
+// Parser
 function tryParseFrame(line){
-  // Matches: "[CAN1] [ID:0x7E8..." OR just "[ID:0x7E8..."
   const m = line.match(/(?:\[CAN(\d+)\]\s*)?\[?ID:0x([0-9A-Fa-f]+)\s+(EXT|STD)\s+(RTR|DAT)\s+DLC:(\d+)\s+Data:\s*(.*?)\]?\s*$/i);
   if(!m) return null;
   
-  const busNum = m[1] ? parseInt(m[1], 10) : 1; // Default to 1 if not specified
+  const busNum = m[1] ? parseInt(m[1], 10) : 1; 
   const idHex = m[2].toUpperCase();
   const ext = (m[3].toUpperCase() === 'EXT');
   const rtr = (m[4].toUpperCase() === 'RTR');
@@ -816,29 +783,28 @@ function tryParseFrame(line){
 
 function hex8(idHex){ return idHex.padStart(8,'0').toUpperCase(); }
 
-// Logging (SavvyCAN CSV compatible)
+// Logging (SavvyCAN CSV)
 let logActive = false;
 let logFrames = [];
 let logStart_ms = null;
 let logFilename = '';
-const MAX_LOG_FRAMES = 500000; // cap to avoid unbounded RAM use
+const MAX_LOG_FRAMES = 500000; 
 
-// ---- NEW: helper to log TX frames (same structure as RX) ----
-function logTxFrame(idHex, ext, dlc, bytes) {
+function logTxFrame(idHex, ext, dlc, bytes, busOverride = 0) {
   if (!logActive) return;
   logFrames.push({
     ts_us_neg: rel_us_negative(),
     idHex8: hex8(idHex),
     ext: ext,
     dlc: dlc,
-    bytes: bytes
+    bytes: bytes,
+    busNum: busOverride
   });
   if (logFrames.length > MAX_LOG_FRAMES) {
     logFrames.splice(0, logFrames.length - MAX_LOG_FRAMES);
     appendStatusRow('[log] capped (oldest dropped)');
   }
 }
-// ------------------------------------------------------------
 
 function normalizeCsvName(s){
   s = (s||'').trim();
@@ -883,8 +849,8 @@ function buildSavvyCanCSV(frames){
       String(f.ts_us_neg),
       String(f.idHex8),
       (f.ext ? 'TRUE' : 'FALSE'),
-      'Rx',
-      '0',
+      (f.busNum === 0 ? 'Tx' : 'Rx'),
+      String(f.busNum === 0 ? 1 : f.busNum),
       String(len),
       ...b
     ];
@@ -918,6 +884,7 @@ function stopLogging(){
 function currentCsvName(){ return (logFilename && logFilename.length) ? logFilename : ('savvycan_'+Date.now()+'.csv'); }
 function getCsvTextAndName(){ const name=currentCsvName(); return { csvText: buildSavvyCanCSV(logFrames), name }; }
 downloadBtn.addEventListener('click', ()=>{ const { csvText, name } = getCsvTextAndName(); const ok = downloadCSV(csvText, name); appendStatusRow(ok ? '[download] CSV saved' : '[download] failed'); });
+
 async function uploadCsvFile(csvText, filename){
   const blob = new Blob([csvText], { type: 'text/csv' });
   try {
@@ -933,16 +900,13 @@ uploadBtn.addEventListener('click', ()=>{ const { csvText, name } = getCsvTextAn
 
 // WebSocket
 let ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.hostname+':81/');
-
-function scrollBottom(){ termScroller.scrollTop = termScroller.scrollHeight; }
 function showToast(msg){ toast.textContent = msg; toast.style.display='block'; setTimeout(()=>{ toast.style.display='none'; }, 1500); }
 
-// ===== STREAMED WS HANDLER WITH BACKPRESSURE =====
 ws.onopen = ()=> { statusEl.textContent='connected'; updateStartEnabled(); updateSendEnabled(); };
 ws.onclose= ()=> { statusEl.textContent='disconnected'; updateStartEnabled(); updateSendEnabled(); };
 ws.onerror= ()=> { statusEl.textContent='socket error'; updateStartEnabled(); updateSendEnabled(); };
 ws.onmessage = (ev) => {
-  if (ev.data === '{"type":"ka"}' || ev.data === 'KA' || ev.data === 'KA\n') return; // ignore keep-alive
+  if (ev.data === '{"type":"ka"}' || ev.data === 'KA' || ev.data === 'KA\n') return; 
 
   if (ev.data.startsWith('{')) {
     const msg = JSON.parse(ev.data);
@@ -954,7 +918,6 @@ ws.onmessage = (ev) => {
 
   wsBuf += ev.data.replace(/\r/g, '');
 
-  // Rough byte cap for pending buffer; trim to last full line
   if (wsBuf.length > 2_000_000) {
     const cut = wsBuf.lastIndexOf('\n', wsBuf.length - 1_000_000);
     wsBuf = cut > 0 ? wsBuf.slice(cut + 1) : wsBuf.slice(-1_000_000);
@@ -973,7 +936,7 @@ function flushWsChunk(){
     chunk = wsBuf.slice(0, lastNL);
     wsBuf  = wsBuf.slice(lastNL + 1);
   } else {
-    return; // no full line yet
+    return; 
   }
 
   let lines = chunk.split('\n');
@@ -993,14 +956,35 @@ function flushWsChunk(){
 
     const f=tryParseFrame(line);
     if(f){
-      const idDisp='0x'+f.idHex; incrementIdCountBatched(idDisp);
+      const idDisp='0x'+f.idHex; 
+      incrementIdCountBatched(idDisp, f.busNum);
+      
       const bytes = Array.from({length:8}, (_,i)=> f.dataBytes[i] ? f.dataBytes[i].toUpperCase().padStart(2,'0') : '');
-      if(!filterActive() || selected.has(idDisp)){
-        const rowObj = { index: ++frameCounter, timePretty: fmtTime(), idDisp, ext: f.ext, rtr: f.rtr, dlc: f.dlc, bytes };
+      const key = `C${f.busNum}:${idDisp}`;
+
+      if(!filterActive() || selected.has(key)){
+        const rowObj = { 
+          index: ++frameCounter, 
+          timePretty: fmtTime(), 
+          busNum: f.busNum, 
+          idDisp: idDisp, 
+          ext: f.ext, 
+          rtr: f.rtr, 
+          dlc: f.dlc, 
+          bytes: bytes 
+        };
         if (overrideMode) upsertFrameRowBatched(rowObj, frag); else appendFrameRowBatched(rowObj, frag);
       }
+
       if (logActive){
-        logFrames.push({ ts_us_neg: rel_us_negative(), idHex8: hex8(f.idHex), ext: f.ext, dlc: f.dlc, bytes: f.dataBytes });
+        logFrames.push({ 
+          ts_us_neg: rel_us_negative(), 
+          idHex8: hex8(f.idHex), 
+          ext: f.ext, 
+          dlc: f.dlc, 
+          bytes: f.dataBytes, 
+          busNum: f.busNum 
+        });
         if (logFrames.length > MAX_LOG_FRAMES) {
           logFrames.splice(0, logFrames.length - MAX_LOG_FRAMES);
           appendStatusRow('[log] capped (oldest dropped)');
@@ -1024,14 +1008,12 @@ function flushWsChunk(){
   }
 }
 
-// Smooth CPU use when tab hidden: resume parsing on visible
 document.addEventListener('visibilitychange', ()=>{
   if (!document.hidden && !flushTimer && wsBuf.length) {
     flushTimer = setTimeout(flushWsChunk, 0);
   }
 });
 
-// Utilities
 function clearTerm(){ frameBody.innerHTML=''; frameCounter=0; rowMap.clear(); }
 function setAck(on){
   const onBtn=document.getElementById('ack-on'); const offBtn=document.getElementById('ack-off');
@@ -1042,9 +1024,9 @@ function parseStatus(line){
   if (/\bLISTEN\b/i.test(line)) setAck(false);
 }
 
-// ========== Web-only control (HTTP) ==========
+// Control HTTP endpoints
 let desiredKbps = 500;
-let desiredMode = 'normal'; // or 'listen'
+let desiredMode = 'normal'; 
 async function openNormal(){ desiredMode='normal'; await openCan(); }
 async function openListen(){ desiredMode='listen'; await openCan(); }
 async function applyBitrate(kbps){ desiredKbps = kbps; await openCan(); }
@@ -1061,25 +1043,20 @@ async function closeCan(){
   try { const r = await fetch('/api/can/close', { method:'POST' }); const j = await r.json(); if (j.ok) appendStatusRow('[can] closed'); } catch(e){ appendStatusRow('[can] close error'); }
 }
 
-// ========== Bridge Control ==========
 let bridgeActive = true;
 async function toggleBridge() {
   bridgeActive = !bridgeActive;
   const btn = document.getElementById('bridgeBtn');
   btn.textContent = 'Bridge: ' + (bridgeActive ? 'ON' : 'OFF');
   btn.style.outline = bridgeActive ? '2px solid var(--accent2)' : '2px solid var(--danger)';
-  
   try {
     const body = new URLSearchParams({ enable: bridgeActive ? '1' : '0' });
     const r = await fetch('/api/can/bridge', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
     const j = await r.json();
     if (j.ok) appendStatusRow('[bridge] ' + (bridgeActive ? 'enabled' : 'disabled'));
-  } catch(e) {
-    appendStatusRow('[bridge] toggle error');
-  }
+  } catch(e) { appendStatusRow('[bridge] toggle error'); }
 }
 
-// ========== Dynamic Manipulation Control ==========
 let manipActive = false;
 async function toggleManip() {
   manipActive = !manipActive;
@@ -1087,34 +1064,21 @@ async function toggleManip() {
   btn.textContent = manipActive ? 'Rule Active' : 'Enable Rule';
   btn.style.outline = manipActive ? '2px solid var(--accent2)' : '';
 
-  // Get values from the inputs
   const filter = document.getElementById('m_filter').value || '00';
   const idx = document.getElementById('m_idx').value || '0';
   const val = document.getElementById('m_val').value || '00';
 
   try {
-    const body = new URLSearchParams({ 
-      enable: manipActive ? '1' : '0',
-      filter: filter,
-      index: idx,
-      val: val
-    });
+    const body = new URLSearchParams({ enable: manipActive ? '1' : '0', filter: filter, index: idx, val: val });
     const r = await fetch('/api/can/manip', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
     const j = await r.json();
-    
-    if (j.ok) {
-      appendStatusRow('[manip] ' + (manipActive ? `ON: If B[0]==0x${filter}, set B[${idx}]=0x${val}` : 'OFF'));
-    }
-  } catch(e) {
-    appendStatusRow('[manip] toggle error');
-  }
+    if (j.ok) appendStatusRow('[manip] ' + (manipActive ? `ON: If B[0]==0x${filter}, set B[${idx}]=0x${val}` : 'OFF'));
+  } catch(e) { appendStatusRow('[manip] toggle error'); }
 }
 
-
-// Set initial button state outline
 document.getElementById('bridgeBtn').style.outline = '2px solid var(--accent2)';
 
-// Send panel
+// Send Box Parsers
 function parseIdField(v){
   v = (v||'').trim();
   if (v.startsWith('0x') || v.startsWith('0X')) v = v.slice(2);
@@ -1122,12 +1086,10 @@ function parseIdField(v){
   return v.toUpperCase();
 }
 function parseDataBytesFlexible(v){
-  v = (v || '').toUpperCase().trim();
-  v = v.replace(/0X/g, '');
+  v = (v || '').toUpperCase().trim().replace(/0X/g, '');
   if (!v) return [];
-  const hasSep = /[\s,]/.test(v);
   const out = [];
-  if (hasSep) {
+  if (/[\s,]/.test(v)) {
     const toks = v.split(/[\s,]+/).filter(Boolean);
     for (let t of toks) {
       if (!/^[0-9A-F]{1,2}$/.test(t)) return null;
@@ -1138,9 +1100,7 @@ function parseDataBytesFlexible(v){
   } else {
     if (!/^[0-9A-F]+$/.test(v)) return null;
     if (v.length % 2 === 1) v = '0' + v;
-    for (let i = 0; i < v.length && out.length < 8; i += 2) {
-      out.push(v.slice(i, i + 2));
-    }
+    for (let i = 0; i < v.length && out.length < 8; i += 2) out.push(v.slice(i, i + 2));
   }
   return out;
 }
@@ -1151,19 +1111,14 @@ function updateDLCandValidity(){
   if (!rtr) {
     bytes = parseDataBytesFlexible(txData.value);
     if (bytes === null) {
-      dlcBadge.textContent = 'DLC: ?';
-      dlcBadge.classList.remove('ok'); dlcBadge.classList.add('bad');
-      updateSendEnabled(false);
-      return { id, bytes: [], dlc: 0, valid: false };
+      dlcBadge.textContent = 'DLC: ?'; dlcBadge.classList.remove('ok'); dlcBadge.classList.add('bad');
+      updateSendEnabled(false); return { id, bytes: [], dlc: 0, valid: false };
     }
   }
   const dlc = rtr ? 0 : bytes.length;
   const valid = !!id && dlc >= 0 && dlc <= 8;
-  dlcBadge.textContent = 'DLC: ' + dlc;
-  dlcBadge.classList.toggle('bad', !valid);
-  dlcBadge.classList.toggle('ok', valid);
-  updateSendEnabled(valid);
-  return { id, bytes, dlc, valid };
+  dlcBadge.textContent = 'DLC: ' + dlc; dlcBadge.classList.toggle('bad', !valid); dlcBadge.classList.toggle('ok', valid);
+  updateSendEnabled(valid); return { id, bytes, dlc, valid };
 }
 function updateSendEnabled(validNow){
   const wsOk = (ws && ws.readyState===1);
@@ -1182,60 +1137,35 @@ txSend.addEventListener('click', trySend);
 async function trySend(){
   const { id, bytes, dlc, valid } = updateDLCandValidity();
   if (!valid) return;
+  const extBool = txExt.checked; const rtrBool = txRtr.checked; const dataStr = (bytes||[]).join(' ');
 
-  const extBool = txExt.checked;
-  const rtrBool = txRtr.checked;
-  const dataStr = (bytes||[]).join(' ');
-
-  const body = new URLSearchParams({
-    id,
-    ext: extBool ? '1' : '0',
-    rtr: rtrBool ? '1' : '0',
-    dlc: String(dlc),
-    data: dataStr
-  });
-
+  const body = new URLSearchParams({ id, ext: extBool ? '1' : '0', rtr: rtrBool ? '1' : '0', dlc: String(dlc), data: dataStr });
   try {
-    const r = await fetch('/api/can/send', {
-      method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body
-    });
+    const r = await fetch('/api/can/send', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
     const j = await r.json();
     if (j.ok) {
       appendStatusRow('[TX OK] '+(extBool?'EXT ':'STD ')+id+' dlc='+dlc);
       rememberSend({ id, ext: extBool, rtr: rtrBool, data: dataStr, dlc });
 
-      // ---- NEW: show TX frame in table + log it ----
-      const idDisp = '0x' + id; // id is already sanitized hex from parseIdField
+      const idDisp = '0x' + id; 
       const rowBytes = Array.from({length:8}, (_,i)=> bytes[i] ? bytes[i] : '');
-      incrementIdCountBatched(idDisp);
+      incrementIdCountBatched(idDisp, 0); 
+      
       const rowObj = {
-        index: ++frameCounter,
-        timePretty: fmtTime(),
-        idDisp,
-        ext: extBool,
-        rtr: rtrBool,
-        dlc,
-        bytes: rowBytes
+        index: ++frameCounter, timePretty: fmtTime(), busNum: 0, idDisp, ext: extBool, rtr: rtrBool, dlc, bytes: rowBytes
       };
+      
       const fragTx = document.createDocumentFragment();
       if (overrideMode) upsertFrameRowBatched(rowObj, fragTx); else appendFrameRowBatched(rowObj, fragTx);
       frameBody.appendChild(fragTx);
-      pruneOldRows();
-      scrollBottom();
+      pruneOldRows(); scrollBottom();
 
-      logTxFrame(id, extBool, dlc, bytes);
-      // ----------------------------------------------
-    } else {
-      appendStatusRow('[TX FAIL]');
-    }
-  } catch(e){
-    appendStatusRow('[TX ERROR]');
-  }
+      logTxFrame(id, extBool, dlc, bytes, 0);
+    } else { appendStatusRow('[TX FAIL]'); }
+  } catch(e){ appendStatusRow('[TX ERROR]'); }
 }
 
-// Settings UI
+// Settings
 function openSettings(){ settingsModal.classList.add('open'); loadSettings(); }
 function closeSettingsModal(){ settingsModal.classList.remove('open'); }
 settingsBtn.addEventListener('click', openSettings);
@@ -1244,71 +1174,46 @@ settingsModal.addEventListener('click', (e)=>{ if(e.target===settingsModal) clos
 
 async function loadSettings(){
   try{
-    // We now fetch 3 endpoints at once
     const [apRes, staRes, mqttRes] = await Promise.all([ fetch('/api/apcfg'), fetch('/api/stacfg'), fetch('/api/mqttcfg') ]);
-    const ap = await apRes.json(); 
-    const sta = await staRes.json();
-    const mqtt = await mqttRes.json();
+    const ap = await apRes.json(); const sta = await staRes.json(); const mqtt = await mqttRes.json();
 
     ap_ssid.value = ap.ssid || ''; ap_pass.value = ap.pass || '';
     sta_enabled.checked = !!sta.enabled; sta_ssid.value = sta.ssid || ''; sta_pass.value = sta.pass || '';
     
-    // Load MQTT values
-    mqtt_enabled.checked = !!mqtt.enabled;
-    mqtt_server.value = mqtt.server || '';
-    mqtt_port.value = mqtt.port || 1883;
-    mqtt_user.value = mqtt.user || '';
-    mqtt_pass.value = mqtt.pass || '';
-   mqtt_subTopic.value = mqtt.subTopic || 'webcan/tx'; 
-   mqtt_pubTopic.value = mqtt.pubTopic || 'webcan/rx'; // NEW
+    mqtt_enabled.checked = !!mqtt.enabled; mqtt_server.value = mqtt.server || ''; mqtt_port.value = mqtt.port || 1883;
+    mqtt_user.value = mqtt.user || ''; mqtt_pass.value = mqtt.pass || '';
+    mqtt_subTopic.value = mqtt.subTopic || 'webcan/tx'; mqtt_pubTopic.value = mqtt.pubTopic || 'webcan/rx'; 
     netBadge.textContent = (location.hostname === '192.168.4.1') ? 'AP mode' : 'STA mode';
   }catch(e){ showToast('Failed to load settings'); }
 }
 
-
 saveAp.addEventListener('click', async ()=>{
   const ssid = ap_ssid.value.trim(); const pass = ap_pass.value.trim();
-  const body = new URLSearchParams({ ssid, pass });
   try{
-    const r = await fetch('/api/apcfg', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    const r = await fetch('/api/apcfg', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams({ ssid, pass })});
     const j = await r.json(); showToast(j.ok ? 'AP saved. Reboot to apply.' : 'AP save failed');
   }catch(_){ showToast('AP save error'); }
 });
 saveSta.addEventListener('click', async ()=>{
   const ssid = sta_ssid.value.trim(); const pass = sta_pass.value.trim(); const enabled = sta_enabled.checked ? '1' : '0';
-  const body = new URLSearchParams({ ssid, pass, enabled });
   try{
-    const r = await fetch('/api/stacfg', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    const r = await fetch('/api/stacfg', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams({ ssid, pass, enabled })});
     const j = await r.json(); showToast(j.ok ? 'STA saved. Reboot to apply.' : 'STA save failed');
   }catch(_){ showToast('STA save error'); }
 });
-
 saveMqtt.addEventListener('click', async ()=>{
-  const server = mqtt_server.value.trim(); 
-  const port = mqtt_port.value || 1883;
-  const user = mqtt_user.value.trim(); 
-  const pass = mqtt_pass.value.trim(); 
-  
-  // 1. Grab the value from the HTML input
-  const subTopic = mqtt_subTopic.value.trim(); 
-  const pubTopic = mqtt_pubTopic.value.trim();
+  const server = mqtt_server.value.trim(); const port = mqtt_port.value || 1883;
+  const user = mqtt_user.value.trim(); const pass = mqtt_pass.value.trim(); 
+  const subTopic = mqtt_subTopic.value.trim(); const pubTopic = mqtt_pubTopic.value.trim();
   const enabled = mqtt_enabled.checked ? '1' : '0';
-  
-  // 2. THIS IS THE CRITICAL LINE: Make sure subTopic is in this list!
-const body = new URLSearchParams({ server, port, user, pass, subTopic, pubTopic, enabled });
-  
   try{
-    const r = await fetch('/api/mqttcfg', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
-    const j = await r.json(); 
-    showToast(j.ok ? 'MQTT saved. Reboot to apply.' : 'MQTT save failed');
+    const r = await fetch('/api/mqttcfg', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams({ server, port, user, pass, subTopic, pubTopic, enabled })});
+    const j = await r.json(); showToast(j.ok ? 'MQTT saved. Reboot to apply.' : 'MQTT save failed');
   }catch(_){ showToast('MQTT save error'); }
 });
 
-// Local ping probe (works in AP, doesn’t require Internet)
 let wsAlive = false;
-function setOnlineUI(isUp) {
-  // optional: implement a banner if desired
-}
+function setOnlineUI(isUp) { }
 function onWSOpen()  { wsAlive = true;  setOnlineUI(true); }
 function onWSClose() { wsAlive = false; setOnlineUI(false); }
 async function checkLocalLink() {
@@ -1316,11 +1221,9 @@ async function checkLocalLink() {
   catch (e) { setOnlineUI(wsAlive); }
 }
 setInterval(checkLocalLink, 4000);
-
-// Enable start button when WS is ready
 ws.addEventListener('open', ()=>{ updateStartEnabled(); });
 
-// ===== SEQUENCER LOGIC =====
+// Sequencer
 sequencerBtn.onclick = () => sequencerModal.classList.add('open');
 closeSequencer.onclick = () => sequencerModal.classList.remove('open');
 sequencerModal.onclick = (e) => { if(e.target === sequencerModal) sequencerModal.classList.remove('open'); }
@@ -1328,29 +1231,20 @@ sequencerModal.onclick = (e) => { if(e.target === sequencerModal) sequencerModal
 let seqFrames = [];
 let seqRunning = false;
 seqFile.addEventListener('change', ()=>{
-  const f = seqFile.files[0];
-  if(!f) return;
+  const f = seqFile.files[0]; if(!f) return;
   const r = new FileReader();
   r.onload = (e) => {
     const lines = e.target.result.split(/\r?\n/);
     seqFrames = [];
-    // Skip header (i=1)
     for(let i=1; i<lines.length; i++){
-      const cols = lines[i].split(',');
-      if(cols.length < 6) continue;
-      // c4bsilog format: Time, ID, Ext, Dir, Bus, Len, Data...
-      // ID is often 00000752 or 752. Parse as hex.
+      const cols = lines[i].split(','); if(cols.length < 6) continue;
       let idStr = cols[1];
       if(idStr.length > 8) idStr = idStr.substring(idStr.length - 8); 
-      // Ensure hex format
       try { idStr = parseInt(idStr, 16).toString(16).toUpperCase(); } catch(e){ continue; }
-      
       const ext = (cols[2].toUpperCase() === 'TRUE');
       const dlc = parseInt(cols[5]);
       let data = "";
-      for(let j=0; j<dlc; j++) {
-        if(cols[6+j]) data += cols[6+j].trim() + " ";
-      }
+      for(let j=0; j<dlc; j++) { if(cols[6+j]) data += cols[6+j].trim() + " "; }
       seqFrames.push({id: idStr, ext, rtr:false, dlc, data: data.trim()});
     }
     seqStatus.innerText = `Loaded ${seqFrames.length} frames. Ready.`;
@@ -1361,40 +1255,22 @@ seqFile.addEventListener('change', ()=>{
 
 startSeqBtn.addEventListener('click', async ()=>{
   if(!seqFrames.length) return;
-  seqRunning = true;
-  startSeqBtn.disabled = true;
-  stopSeqBtn.disabled = false;
+  seqRunning = true; startSeqBtn.disabled = true; stopSeqBtn.disabled = false;
   const delay = parseInt(seqDelay.value) || 50;
-
   for(let i=0; i<seqFrames.length; i++){
     if(!seqRunning) break;
     const f = seqFrames[i];
     seqStatus.innerText = `Sending ${i+1}/${seqFrames.length}: ID ${f.id}`;
-    
-    // Use the existing send API helper
     try {
-        const body = new URLSearchParams({ 
-            id: f.id, 
-            ext: f.ext?'1':'0', 
-            rtr: '0', 
-            data: f.data, 
-            dlc: f.dlc 
-        });
-        await fetch('/api/can/send', { method:'POST', body });
+        await fetch('/api/can/send', { method:'POST', body: new URLSearchParams({ id: f.id, ext: f.ext?'1':'0', rtr: '0', data: f.data, dlc: f.dlc }) });
     } catch(err){}
-    
     await new Promise(r => setTimeout(r, delay));
   }
-  seqRunning = false;
-  startSeqBtn.disabled = false;
-  stopSeqBtn.disabled = true;
+  seqRunning = false; startSeqBtn.disabled = false; stopSeqBtn.disabled = true;
   seqStatus.innerText = "Sequence Finished.";
 });
 
-stopSeqBtn.addEventListener('click', ()=>{
-  seqRunning = false;
-  seqStatus.innerText = "Stopped by user.";
-});
+stopSeqBtn.addEventListener('click', ()=>{ seqRunning = false; seqStatus.innerText = "Stopped by user."; });
 
 </script>
 </body></html>

@@ -123,6 +123,9 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <button id="selectAllBtn">Select all</button>
         <button id="selectNoneBtn">None</button>
       </div>
+      <div class="sidebtns" style="margin-top:4px">
+        <button id="blockIdsBtn" style="border-color:var(--danger); color:var(--danger)">Block Selected in Bridge</button>
+      </div>
       <div style="font-size:12px;color:#aab3c2">Visible: <span id="selCount">all</span></div>
     </div>
     <div id="idlist"></div>
@@ -396,6 +399,32 @@ const idHistory = document.getElementById('idHistory');
 const dataHistory = document.getElementById('dataHistory');
 const historyBtn = document.getElementById('historyBtn');
 const mqttDot = document.getElementById('mqttDot');
+
+document.getElementById('blockIdsBtn').addEventListener('click', async () => {
+  const rawIds = new Set();
+  for (const key of selected) {
+    // Keys look like "C1:0x7E8", we just want the "7E8" part
+    const parts = key.split(':');
+    if (parts.length === 2) {
+      const hex = parts[1].replace(/0x/i, '');
+      rawIds.add(hex);
+    }
+  }
+  
+  const idsStr = Array.from(rawIds).join(',');
+  
+  try {
+    const body = new URLSearchParams({ ids: idsStr });
+    const r = await fetch('/api/can/block', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
+    const j = await r.json();
+    if (j.ok) {
+      showToast('Blocked ' + rawIds.size + ' IDs');
+      appendStatusRow(`[bridge] Blocked IDs: ${idsStr || 'None (All unblocked)'}`);
+    }
+  } catch(e) {
+    showToast('Failed to block IDs');
+  }
+});
 
 function loadSends(){
   try { sends = JSON.parse(store.getItem(LS_KEY_SENDS) || '[]'); }

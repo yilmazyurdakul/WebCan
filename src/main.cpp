@@ -70,6 +70,17 @@ static QueueHandle_t qMqttTx = nullptr; // CAN -> MQTT
 static EventGroupHandle_t eg = nullptr;
 static const EventBits_t BIT_WS_HAS_CLIENT = (1 << 0);
 
+static uint32_t blockedIds[64];
+static uint8_t blockedIdCount = 0;
+
+inline bool isBlocked(uint32_t id) {
+  for (uint8_t i = 0; i < blockedIdCount; i++) {
+    if (blockedIds[i] == id) return true;
+  }
+  return false;
+}
+// --------------------------------------------
+
 // ================== State & Configuration ==================
 enum SystemStatus
 {
@@ -527,6 +538,28 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
 static void setupHttp()
 {
 
+  // API: Block IDs in Bridge
+  http.on("/api/can/block", HTTP_POST, []() {
+    if (http.hasArg("ids")) {
+      String idList = http.arg("ids");
+      blockedIdCount = 0;
+      int start = 0;
+      while (start < idList.length() && blockedIdCount < 64) {
+        int comma = idList.indexOf(',', start);
+        if (comma == -1) comma = idList.length();
+        String idStr = idList.substring(start, comma);
+        idStr.trim();
+        if (idStr.length() > 0) {
+          blockedIds[blockedIdCount++] = strtoul(idStr.c_str(), NULL, 16);
+        }
+        start = comma + 1;
+      }
+      http.send(200, "application/json", "{\"ok\":1}");
+    } else {
+      http.send(400, "application/json", "{\"ok\":0,\"err\":\"missing_ids\"}");
+    }
+  });
+  
   // API: Get MQTT Config
   http.on("/api/mqttcfg", HTTP_GET, []()
           {
@@ -850,7 +883,7 @@ static void canTask(void *)
         rx.data[manipByteIndex] = manipNewValue;
       }
 
-      if (bridgeMode && ackMode)
+      if (bridgeMode && ackMode && !isBlocked(rx.id))
       {
         can2.tryToSend(rx);
       }
@@ -897,7 +930,7 @@ static void canTask(void *)
         rx.data[manipByteIndex] = manipNewValue;
       }
 
-      if (bridgeMode && ackMode)
+      if (bridgeMode && ackMode && !isBlocked(rx.id))
       {
         can1.tryToSend(rx);
       }

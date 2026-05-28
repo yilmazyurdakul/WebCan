@@ -21,7 +21,7 @@
 #include "time.h"
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
-
+#include <ESPmDNS.h>
 #include "webInterface.h" // Provides INDEX_HTML (PROGMEM)
 
 // ================== Global Objects ==================
@@ -73,9 +73,12 @@ static const EventBits_t BIT_WS_HAS_CLIENT = (1 << 0);
 static uint32_t blockedIds[64];
 static uint8_t blockedIdCount = 0;
 
-inline bool isBlocked(uint32_t id) {
-  for (uint8_t i = 0; i < blockedIdCount; i++) {
-    if (blockedIds[i] == id) return true;
+inline bool isBlocked(uint32_t id)
+{
+  for (uint8_t i = 0; i < blockedIdCount; i++)
+  {
+    if (blockedIds[i] == id)
+      return true;
   }
   return false;
 }
@@ -98,9 +101,12 @@ static uint16_t currentKbps = 500;
 
 // Dynamic Manipulation State
 static bool manipEnabled = false;
-static uint8_t manipFilterByte = 0x21; // The byte to look for at index 0
-static uint8_t manipByteIndex = 4;     // The byte position to change (0 to 7)
-static uint8_t manipNewValue = 0x00;   // The new hex value to inject
+static uint32_t manipTargetId = 0;        // The specific CAN ID to target
+static bool manipRequireTargetId = false; // False = apply to all IDs
+static bool manipZeroMode = false;        // True = Zero payload, False = Single byte
+static uint8_t manipFilterByte = 0x21;    // The byte to look for at index 0
+static uint8_t manipByteIndex = 4;        // The byte position to change (0 to 7)
+static uint8_t manipNewValue = 0x00;      // The new hex value to inject
 
 // WS Batching Config
 #define WS_BATCH_BYTES 8192
@@ -464,30 +470,42 @@ static bool saveStaConfig(const String &ssid, const String &pass, bool enabled)
 // =========================================================
 //                   WIFI & NETWORK
 // =========================================================
-static void startWiFi() {
-  loadApConfig(); 
+static void startWiFi()
+{
+  loadApConfig();
   loadStaConfig();
 
-  if (gStaCfg.enabled && strlen(gStaCfg.ssid) > 0) {
+  if (gStaCfg.enabled && strlen(gStaCfg.ssid) > 0)
+  {
     Serial.printf("[WiFi] Attempting to connect to STA: %s\n", gStaCfg.ssid);
-    WiFi.mode(WIFI_STA); 
+    WiFi.mode(WIFI_STA);
     WiFi.begin(gStaCfg.ssid, gStaCfg.pass);
-    
-    unsigned long t0 = millis(); 
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) {
+
+    unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000)
+    {
       delay(200);
     }
-    
-    if (WiFi.status() == WL_CONNECTED) {
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
       Serial.print("[WiFi] Connected! STA IP Address: ");
       Serial.println(WiFi.localIP());
+
+      // --- START mDNS HERE ---
+      if (MDNS.begin("webcan"))
+      {
+        Serial.println("[mDNS] Responder started. You can now access it at http://webcan.local");
+      }
+      // -----------------------
+
       return;
     }
     Serial.println("[WiFi] STA Connection failed. Falling back to AP mode.");
   }
 
   // Fallback or intentionally booting as AP
-  WiFi.mode(WIFI_AP); 
+  WiFi.mode(WIFI_AP);
   WiFi.softAP(gApCfg.ssid, gApCfg.pass, AP_CHANNEL, AP_HIDDEN, AP_MAX_CONN);
   Serial.print("[WiFi] Access Point started. AP IP Address: ");
   Serial.println(WiFi.softAPIP());
@@ -539,7 +557,8 @@ static void setupHttp()
 {
 
   // API: Block IDs in Bridge
-  http.on("/api/can/block", HTTP_POST, []() {
+  http.on("/api/can/block", HTTP_POST, []()
+          {
     if (http.hasArg("ids")) {
       String idList = http.arg("ids");
       blockedIdCount = 0;
@@ -557,9 +576,8 @@ static void setupHttp()
       http.send(200, "application/json", "{\"ok\":1}");
     } else {
       http.send(400, "application/json", "{\"ok\":0,\"err\":\"missing_ids\"}");
-    }
-  });
-  
+    } });
+
   // API: Get MQTT Config
   http.on("/api/mqttcfg", HTTP_GET, []()
           {
@@ -604,6 +622,17 @@ static void setupHttp()
     if (http.hasArg("filter")) manipFilterByte = (uint8_t)strtol(http.arg("filter").c_str(), NULL, 16);
     if (http.hasArg("index"))  manipByteIndex = (uint8_t)constrain(http.arg("index").toInt(), 0, 7);
     if (http.hasArg("val"))    manipNewValue = (uint8_t)strtol(http.arg("val").c_str(), NULL, 16);
+    if (http.hasArg("zero"))   manipZeroMode = (http.arg("zero") == "1");
+    
+    if (http.hasArg("id")) {
+      String idStr = http.arg("id");
+      if (idStr.length() > 0) {
+        manipTargetId = strtoul(idStr.c_str(), NULL, 16);
+        manipRequireTargetId = true;
+      } else {
+        manipRequireTargetId = false; // Empty string means apply globally
+      }
+    }
     http.send(200, "application/json", "{\"ok\":1}"); });
 
   // API: Bridge Mode
@@ -878,9 +907,31 @@ static void canTask(void *)
     {
       can1.receive(rx);
 
-      if (manipEnabled && rx.len > manipByteIndex && rx.data[0] == manipFilterByte)
+      if (manipEnabled && rx.len > 0)
       {
-        rx.data[manipByteIndex] = manipNewValue;
+        bool idMatch = !manipRequireTargetId || (rx.id == manipTargetId);
+
+        // Target the specific ID (if set) and keep the B[0] identifier check
+        if (idMatch && rx.data[0] == manipFilterByte)
+        {
+
+          if (manipZeroMode)
+          {
+            // Keep B[0] untouched, wipe everything from index 1 to the end of DLC
+            if (rx.len > 1)
+            {
+              memset(&rx.data[1], 0, rx.len - 1);
+            }
+          }
+          else
+          {
+            // Standard single-byte overwrite
+            if (rx.len > manipByteIndex)
+            {
+              rx.data[manipByteIndex] = manipNewValue;
+            }
+          }
+        }
       }
 
       if (bridgeMode && ackMode && !isBlocked(rx.id))
@@ -925,9 +976,31 @@ static void canTask(void *)
     {
       can2.receive(rx);
 
-      if (manipEnabled && rx.len > manipByteIndex && rx.data[0] == manipFilterByte)
+      if (manipEnabled && rx.len > 0)
       {
-        rx.data[manipByteIndex] = manipNewValue;
+        bool idMatch = !manipRequireTargetId || (rx.id == manipTargetId);
+
+        // Target the specific ID (if set) and keep the B[0] identifier check
+        if (idMatch && rx.data[0] == manipFilterByte)
+        {
+
+          if (manipZeroMode)
+          {
+            // Keep B[0] untouched, wipe everything from index 1 to the end of DLC
+            if (rx.len > 1)
+            {
+              memset(&rx.data[1], 0, rx.len - 1);
+            }
+          }
+          else
+          {
+            // Standard single-byte overwrite
+            if (rx.len > manipByteIndex)
+            {
+              rx.data[manipByteIndex] = manipNewValue;
+            }
+          }
+        }
       }
 
       if (bridgeMode && ackMode && !isBlocked(rx.id))

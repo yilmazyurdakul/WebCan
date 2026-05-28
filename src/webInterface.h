@@ -161,12 +161,16 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       </div>
 
 <div class="group" id="manipgrp" style="margin-left:12px; padding-left:12px; border-left:1px solid var(--border);">
-        <span class="label">Byte[0] </span>
-        <input id="m_filter" type="text" style="width:40px; padding:4px;" value="21" placeholder="Hex" maxlength="2">
-        <span class="label">, Set Byte[</span>
-        <input id="m_idx" type="text" style="width:40px; padding:4px;" min="0" max="7" value="4">
-        <span class="label">] to </span>
-        <input id="m_val" type="text" style="width:40px; padding:4px;" value="00" placeholder="Hex" maxlength="2">
+        <select id="m_action" style="padding:6px; background:#0b1220; color:#e6edf3; border:1px solid var(--border); border-radius:4px; outline:none; font-size:12px;">
+          <option value="single">Set Byte</option>
+          <option value="zero">Zero Payload</option>
+        </select>
+        <span class="label">If B[0]=</span>
+        <input id="m_filter" type="text" style="width:36px; padding:4px;" value="21" placeholder="Hex" maxlength="2">
+        <span class="label">-> [</span>
+        <input id="m_idx" type="text" style="width:30px; padding:4px;" min="0" max="7" value="4">
+        <span class="label">]=</span>
+        <input id="m_val" type="text" style="width:36px; padding:4px;" value="00" placeholder="Hex" maxlength="2">
         <button id="manipBtn" onclick="toggleManip()">Enable Rule</button>
       </div>
 
@@ -324,7 +328,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     </div>
     <div class="sep"></div>
     <div class="help">
-      Upload <code>c4bsilog.csv</code> style. Will parse ID, EXT, LEN, DATA and send one by one.
+      Upload savvycan CSV files. Will parse ID, EXT, LEN, DATA and send one by one.
     </div>
   </div>
 </div>
@@ -1086,6 +1090,13 @@ async function toggleBridge() {
   } catch(e) { appendStatusRow('[bridge] toggle error'); }
 }
 
+// Disable index/val boxes if "Zero Payload" is selected
+document.getElementById('m_action').addEventListener('change', (e) => {
+  const isZero = e.target.value === 'zero';
+  document.getElementById('m_idx').disabled = isZero;
+  document.getElementById('m_val').disabled = isZero;
+});
+
 let manipActive = false;
 async function toggleManip() {
   manipActive = !manipActive;
@@ -1096,13 +1107,39 @@ async function toggleManip() {
   const filter = document.getElementById('m_filter').value || '00';
   const idx = document.getElementById('m_idx').value || '0';
   const val = document.getElementById('m_val').value || '00';
+  const isZero = document.getElementById('m_action').value === 'zero';
+
+  // Automatically grab the Targeted CAN ID from the left sidebar checkboxes
+  let targetId = '';
+  if (manipActive && selected.size > 0) {
+    // Keys look like "C1:0x7E8", we just want the "7E8" part
+    const firstKey = selected.values().next().value;
+    const parts = firstKey.split(':');
+    if (parts.length === 2) targetId = parts[1].replace(/0x/i, '');
+  } else if (manipActive && selected.size === 0) {
+    showToast('No ID selected. Rule applies to ALL IDs.');
+  }
 
   try {
-    const body = new URLSearchParams({ enable: manipActive ? '1' : '0', filter: filter, index: idx, val: val });
+    const body = new URLSearchParams({ 
+      enable: manipActive ? '1' : '0',
+      filter: filter,
+      index: idx,
+      val: val,
+      zero: isZero ? '1' : '0',
+      id: targetId
+    });
     const r = await fetch('/api/can/manip', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
     const j = await r.json();
-    if (j.ok) appendStatusRow('[manip] ' + (manipActive ? `ON: If B[0]==0x${filter}, set B[${idx}]=0x${val}` : 'OFF'));
-  } catch(e) { appendStatusRow('[manip] toggle error'); }
+    
+    if (j.ok) {
+      const idTxt = targetId ? `ID==0x${targetId}` : `ANY ID`;
+      const actTxt = isZero ? `Zero Payload (Keep B[0])` : `Set B[${idx}]=0x${val}`;
+      appendStatusRow(`[manip] ${manipActive ? `ON: If ${idTxt} & B[0]==0x${filter} -> ${actTxt}` : 'OFF'}`);
+    }
+  } catch(e) {
+    appendStatusRow('[manip] toggle error');
+  }
 }
 
 document.getElementById('bridgeBtn').style.outline = '2px solid var(--accent2)';

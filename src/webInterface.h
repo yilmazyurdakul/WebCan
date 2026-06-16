@@ -153,6 +153,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <button onclick="closeCan()">Close</button>
         <span class="label" style="margin-left:8px">Routing:</span>
         <button id="bridgeBtn" onclick="toggleBridge()">Bridge: ON</button>
+        <button id="termBtn" onclick="toggleTermResistor()" style="outline: 2px solid var(--danger);">120Ω: OFF</button>
       </div>
 
       <div class="group" id="overridegrp" style="margin-left:12px">
@@ -1090,6 +1091,26 @@ async function toggleBridge() {
   } catch(e) { appendStatusRow('[bridge] toggle error'); }
 }
 
+// ========== Termination Resistor Control ==========
+let termResistorActive = false;
+async function toggleTermResistor() {
+  termResistorActive = !termResistorActive;
+  const btn = document.getElementById('termBtn');
+  btn.textContent = '120Ω: ' + (termResistorActive ? 'ON' : 'OFF');
+  btn.style.outline = termResistorActive ? '2px solid var(--accent2)' : '2px solid var(--danger)';
+  
+  try {
+    const body = new URLSearchParams({ enable: termResistorActive ? '1' : '0' });
+    const r = await fetch('/api/can/term', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
+    const j = await r.json();
+    if (j.ok) {
+      appendStatusRow('[hardware] Termination Resistor ' + (termResistorActive ? 'Enabled' : 'Disabled'));
+    }
+  } catch(e) {
+    appendStatusRow('[hardware] term resistor toggle error');
+  }
+}
+  
 // Disable index/val boxes if "Zero Payload" is selected
 document.getElementById('m_action').addEventListener('change', (e) => {
   const isZero = e.target.value === 'zero';

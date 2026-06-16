@@ -23,6 +23,14 @@
 #include <WiFiClientSecure.h>
 #include <ESPmDNS.h>
 #include "webInterface.h" // Provides INDEX_HTML (PROGMEM)
+#include <Adafruit_MCP23X17.h>
+
+Adafruit_MCP23X17 mcp;
+
+#define IMMO_A 1
+#define IMMO_B 0
+
+bool termResistorEnabled = false; // Tracks the current state
 
 // ================== Global Objects ==================
 WiFiClientSecure secureClient;
@@ -550,12 +558,44 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
   }
 }
 
+void toggleTerminationResistor(bool enable) {
+  if (enable) {
+    mcp.digitalWrite(IMMO_A, HIGH);
+    mcp.digitalWrite(IMMO_B, LOW);
+  } else {
+    mcp.digitalWrite(IMMO_A, LOW);
+    mcp.digitalWrite(IMMO_B, HIGH);
+  }
+  
+  // 40ms pulse to latch the relay
+  // Note: Using delay() is fine here if called via an HTTP handler task, 
+  // otherwise use vTaskDelay(pdMS_TO_TICKS(40)) if strict FreeRTOS is required.
+  delay(40); 
+  
+  // Unpower coils
+  mcp.digitalWrite(IMMO_A, LOW);
+  mcp.digitalWrite(IMMO_B, LOW);
+  
+  termResistorEnabled = enable;
+}
+
 // =========================================================
 //                   HTTP SERVER SETUP
 // =========================================================
 static void setupHttp()
 {
 
+  // API: Toggle Termination Resistors
+  http.on("/api/can/term", HTTP_POST, []() {
+    if (http.hasArg("enable")) {
+      bool enable = (http.arg("enable") == "1");
+      toggleTerminationResistor(enable);
+      http.send(200, "application/json", "{\"ok\":1}");
+    } else {
+      http.send(400, "application/json", "{\"ok\":0}");
+    }
+  });
+  
   // API: Block IDs in Bridge
   http.on("/api/can/block", HTTP_POST, []()
           {
@@ -1338,6 +1378,18 @@ void setup()
   if (gMqttCfg.enabled && strlen(gMqttCfg.server) > 0)
   {
     setupSecureMQTT();
+  }
+
+  // Initialize MCP23X17 (Make sure Wire.begin() is called before this if needed)
+  if (!mcp.begin_I2C()) {
+    Serial.println("Error initializing MCP23X17.");
+  } else {
+    mcp.pinMode(IMMO_A, OUTPUT);
+    mcp.pinMode(IMMO_B, OUTPUT);
+    
+    // Ensure relay coils are unpowered on boot
+    mcp.digitalWrite(IMMO_A, LOW);
+    mcp.digitalWrite(IMMO_B, LOW);
   }
 
   startRtosPipelines();

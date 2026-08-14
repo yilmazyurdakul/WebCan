@@ -302,7 +302,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 </div>
 
 <div class="modal" id="sequencerModal" aria-hidden="true">
-  <div class="card" style="max-width:600px">
+  <div class="card" style="max-width:860px">
     <div style="display:flex; align-items:center; gap:10px">
       <h3 style="margin:0; color:var(--accent)">CSV Sequencer</h3>
       <div style="margin-left:auto"><button id="closeSequencer">Close</button></div>
@@ -318,6 +318,17 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
           <label>Delay (ms)</label>
           <input type="number" id="seqDelay" value="50" min="10" style="width:80px">
         </div>
+        <div class="row" style="margin-top:10px">
+          <label>IDs to send</label>
+          <span id="seqIdCount" style="font-size:12px; color:var(--muted)">0 selected</span>
+        </div>
+        <div class="sidebtns" style="margin-top:8px">
+          <button id="seqSelectAllBtn" type="button">Select all</button>
+          <button id="seqSelectNoneBtn" type="button">None</button>
+        </div>
+        <div id="seqIdList" style="max-height:220px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:4px 6px; margin-top:8px; background:#0b1220;">
+          <div style="font-size:12px; color:#aab3c2; padding:4px">Upload a CSV to see IDs.</div>
+        </div>
       </section>
       <section style="display:flex; flex-direction:column; justify-content:center; gap:10px">
         <div id="seqStatus" style="font-size:12px; color:var(--muted); text-align:center; min-height:20px">No file loaded</div>
@@ -330,6 +341,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     <div class="sep"></div>
     <div class="help">
       Upload savvycan CSV files. Will parse ID, EXT, LEN, DATA and send one by one.
+      Only frames whose CAN ID is selected above are sent.
     </div>
   </div>
 </div>
@@ -382,6 +394,10 @@ const seqStatus = document.getElementById('seqStatus');
 const startSeqBtn = document.getElementById('startSeqBtn');
 const stopSeqBtn = document.getElementById('stopSeqBtn');
 const seqDelay = document.getElementById('seqDelay');
+const seqIdList = document.getElementById('seqIdList');
+const seqIdCount = document.getElementById('seqIdCount');
+const seqSelectAllBtn = document.getElementById('seqSelectAllBtn');
+const seqSelectNoneBtn = document.getElementById('seqSelectNoneBtn');
 
 // Performance limits
 const MAX_DOM_ROWS         = 1500;
@@ -943,11 +959,13 @@ ws.onmessage = (ev) => {
   if (ev.data === '{"type":"ka"}' || ev.data === 'KA' || ev.data === 'KA\n') return; 
 
   if (ev.data.startsWith('{')) {
-    const msg = JSON.parse(ev.data);
-    if (msg.type === 'status') {
-      mqttDot.style.backgroundColor = msg.mqtt ? 'var(--accent2)' : 'var(--danger)';
-      return;
-    }
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'status') {
+        mqttDot.style.backgroundColor = msg.mqtt ? 'var(--accent2)' : 'var(--danger)';
+        return;
+      }
+    } catch (e) { /* malformed JSON — ignore and continue processing as text */ }
   }
 
   wsBuf += ev.data.replace(/\r/g, '');
@@ -1317,24 +1335,70 @@ sequencerModal.onclick = (e) => { if(e.target === sequencerModal) sequencerModal
 
 let seqFrames = [];
 let seqRunning = false;
+let seqIdMap = new Map(); // key: 'E|ID' or 'S|ID' -> { id, ext, checked }
+
+function updateSeqIdCount(){
+  let sel = 0;
+  for (const rec of seqIdMap.values()) if (rec.checked) sel++;
+  seqIdCount.textContent = sel + ' selected';
+}
+function renderSeqIds(){
+  seqIdList.innerHTML = '';
+  if (!seqIdMap.size) {
+    const p = document.createElement('div');
+    p.style.cssText = 'font-size:12px;color:#aab3c2;padding:4px';
+    p.textContent = 'Upload a CSV to see IDs.';
+    seqIdList.appendChild(p);
+    updateSeqIdCount();
+    return;
+  }
+  const keys = [...seqIdMap.keys()].sort((a, b) => a.localeCompare(b));
+  for (const key of keys) {
+    const rec = seqIdMap.get(key);
+    const row = document.createElement('div');
+    row.className = 'idrow';
+    row.style.padding = '3px 6px';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = rec.checked;
+    cb.addEventListener('change', ()=>{ rec.checked = cb.checked; updateSeqIdCount(); });
+    const tag = document.createElement('span');
+    tag.className = 'idtag';
+    tag.textContent = '0x' + rec.id + (rec.ext ? ' (EXT)' : ' (STD)');
+    row.appendChild(cb);
+    row.appendChild(tag);
+    seqIdList.appendChild(row);
+  }
+  updateSeqIdCount();
+}
+seqSelectAllBtn.addEventListener('click', ()=>{ for (const rec of seqIdMap.values()) rec.checked = true; renderSeqIds(); });
+seqSelectNoneBtn.addEventListener('click', ()=>{ for (const rec of seqIdMap.values()) rec.checked = false; renderSeqIds(); });
+
 seqFile.addEventListener('change', ()=>{
   const f = seqFile.files[0]; if(!f) return;
   const r = new FileReader();
   r.onload = (e) => {
     const lines = e.target.result.split(/\r?\n/);
     seqFrames = [];
+    const idSet = new Map();
     for(let i=1; i<lines.length; i++){
       const cols = lines[i].split(','); if(cols.length < 6) continue;
       let idStr = cols[1];
       if(idStr.length > 8) idStr = idStr.substring(idStr.length - 8); 
-      try { idStr = parseInt(idStr, 16).toString(16).toUpperCase(); } catch(e){ continue; }
+      const idNum = parseInt(idStr, 16);
+      if (isNaN(idNum)) continue;
+      idStr = idNum.toString(16).toUpperCase();
       const ext = (cols[2].toUpperCase() === 'TRUE');
       const dlc = parseInt(cols[5]);
       let data = "";
       for(let j=0; j<dlc; j++) { if(cols[6+j]) data += cols[6+j].trim() + " "; }
       seqFrames.push({id: idStr, ext, rtr:false, dlc, data: data.trim()});
+      const key = (ext ? 'E' : 'S') + '|' + idStr;
+      if (!idSet.has(key)) idSet.set(key, { id: idStr, ext, checked: true });
     }
-    seqStatus.innerText = `Loaded ${seqFrames.length} frames. Ready.`;
+    seqIdMap = idSet;
+    renderSeqIds();
+    seqStatus.innerText = `Loaded ${seqFrames.length} frames, ${seqIdMap.size} unique IDs. Ready.`;
     startSeqBtn.disabled = false;
   };
   r.readAsText(f);
@@ -1342,19 +1406,31 @@ seqFile.addEventListener('change', ()=>{
 
 startSeqBtn.addEventListener('click', async ()=>{
   if(!seqFrames.length) return;
+  const selected = [];
+  for (const f of seqFrames) {
+    const key = (f.ext ? 'E' : 'S') + '|' + f.id;
+    const rec = seqIdMap.get(key);
+    if (rec && rec.checked) selected.push(f);
+  }
+  if (!selected.length) {
+    seqStatus.innerText = 'No selected IDs to send.';
+    return;
+  }
   seqRunning = true; startSeqBtn.disabled = true; stopSeqBtn.disabled = false;
   const delay = parseInt(seqDelay.value) || 50;
-  for(let i=0; i<seqFrames.length; i++){
+  let sent = 0;
+  for(let i=0; i<selected.length; i++){
     if(!seqRunning) break;
-    const f = seqFrames[i];
-    seqStatus.innerText = `Sending ${i+1}/${seqFrames.length}: ID ${f.id}`;
+    const f = selected[i];
+    seqStatus.innerText = `Sending ${i+1}/${selected.length}: ID ${f.id}`;
     try {
         await fetch('/api/can/send', { method:'POST', body: new URLSearchParams({ id: f.id, ext: f.ext?'1':'0', rtr: '0', data: f.data, dlc: f.dlc }) });
+        sent++;
     } catch(err){}
     await new Promise(r => setTimeout(r, delay));
   }
   seqRunning = false; startSeqBtn.disabled = false; stopSeqBtn.disabled = true;
-  seqStatus.innerText = "Sequence Finished.";
+  seqStatus.innerText = `Finished: ${sent}/${selected.length} sent.`;
 });
 
 stopSeqBtn.addEventListener('click', ()=>{ seqRunning = false; seqStatus.innerText = "Stopped by user."; });

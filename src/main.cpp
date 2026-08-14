@@ -10,6 +10,7 @@
 #include "freertos/event_groups.h"
 
 #include <SPI.h>
+#include <Wire.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
@@ -81,14 +82,26 @@ static const EventBits_t BIT_WS_HAS_CLIENT = (1 << 0);
 static uint32_t blockedIds[64];
 static uint8_t blockedIdCount = 0;
 
+// Protects blockedIds/blockedIdCount (read in canTask, rewritten in HTTP handler)
+static portMUX_TYPE gBlockedMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Serializes CAN controller access between canTask and reconfigure()
+static SemaphoreHandle_t canMutex = nullptr;
+
 inline bool isBlocked(uint32_t id)
 {
+  bool blocked = false;
+  portENTER_CRITICAL(&gBlockedMux);
   for (uint8_t i = 0; i < blockedIdCount; i++)
   {
     if (blockedIds[i] == id)
-      return true;
+    {
+      blocked = true;
+      break;
+    }
   }
-  return false;
+  portEXIT_CRITICAL(&gBlockedMux);
+  return blocked;
 }
 // --------------------------------------------
 
@@ -101,27 +114,25 @@ enum SystemStatus
   STATUS_ERROR
 };
 
-static bool canReady = false;
-static bool bridgeMode = true;
-static bool ackMode = true;
-static bool printFrames = true;
+// 'volatile' ensures cross-core writes are visible and not cached in registers.
+// Controller-level operations are additionally serialized with canMutex.
+static volatile bool canReady = false;
+static volatile bool bridgeMode = true;
+static volatile bool ackMode = true;
 static uint16_t currentKbps = 500;
 
-// Dynamic Manipulation State
-static bool manipEnabled = false;
-static uint32_t manipTargetId = 0;        // The specific CAN ID to target
-static bool manipRequireTargetId = false; // False = apply to all IDs
-static bool manipZeroMode = false;        // True = Zero payload, False = Single byte
-static uint8_t manipFilterByte = 0x21;    // The byte to look for at index 0
-static uint8_t manipByteIndex = 4;        // The byte position to change (0 to 7)
-static uint8_t manipNewValue = 0x00;      // The new hex value to inject
+// Cached MQTT state (mirrors gMqttCfg.enabled / mqtt.connected() for cross-task reads)
+static volatile bool mqttEnabledFlag = false;
+static volatile bool mqttConnectedFlag = false;
 
-// WS Batching Config
-#define WS_BATCH_BYTES 8192
-#define WS_FLUSH_EVERY_MS 5
-static char gWsBuf[WS_BATCH_BYTES];
-static size_t gWsLen = 0;
-static uint32_t gWsLastFlush = 0;
+// Dynamic Manipulation State
+static volatile bool manipEnabled = false;
+static volatile uint32_t manipTargetId = 0;        // The specific CAN ID to target
+static volatile bool manipRequireTargetId = false; // False = apply to all IDs
+static volatile bool manipZeroMode = false;        // True = Zero payload, False = Single byte
+static volatile uint8_t manipFilterByte = 0x21;    // The byte to look for at index 0
+static volatile uint8_t manipByteIndex = 4;        // The byte position to change (0 to 7)
+static volatile uint8_t manipNewValue = 0x00;      // The new hex value to inject
 
 // ================== Config Structs ==================
 struct ApConfig
@@ -171,18 +182,25 @@ static bool reconfigure(uint16_t kbps);
 // =========================================================
 //                   TIME & CERTIFICATE
 // =========================================================
-void syncTime()
+bool syncTime()
 {
   configTime(0, 0, "pool.ntp.org", "time.google.com");
   Serial.print("Waiting for NTP time sync: ");
   time_t now = time(nullptr);
+  unsigned long t0 = millis();
   while (now < 8 * 3600 * 2)
   {
+    if (millis() - t0 > 10000UL)
+    {
+      Serial.println(" Time sync FAILED (timeout)!");
+      return false;
+    }
     delay(500);
     Serial.print(".");
     now = time(nullptr);
   }
   Serial.println(" Time synced!");
+  return true;
 }
 
 const char *loadCertificateBuffer(const char *path)
@@ -245,7 +263,10 @@ const char *loadCertificateBuffer(const char *path)
 void setupSecureMQTT()
 {
   Serial.println("[MQTTS] Initializing Secure MQTT...");
-  syncTime();
+  if (!syncTime())
+  {
+    Serial.println("[MQTTS] WARNING: NTP sync failed - TLS handshake will likely fail.");
+  }
 
   // Prevent memory leak if re-initialized
   if (root_ca != nullptr)
@@ -285,6 +306,7 @@ static void setDefaultMqttConfig()
   strncpy(gMqttCfg.subTopic, "webcan/tx", sizeof(gMqttCfg.subTopic));
   strncpy(gMqttCfg.pubTopic, "webcan/rx", sizeof(gMqttCfg.pubTopic));
   gMqttCfg.enabled = false;
+  mqttEnabledFlag = false;
 }
 
 static bool loadMqttConfig()
@@ -335,6 +357,7 @@ static bool loadMqttConfig()
     strncpy(gMqttCfg.pubTopic, "webcan/rx", sizeof(gMqttCfg.pubTopic));
 
   gMqttCfg.enabled = (en == "1");
+  mqttEnabledFlag = gMqttCfg.enabled;
   return true;
 }
 
@@ -361,6 +384,7 @@ static bool saveMqttConfig(const String &server, uint16_t port, const String &us
   pass.toCharArray(gMqttCfg.pass, sizeof(gMqttCfg.pass));
   sub.toCharArray(gMqttCfg.subTopic, sizeof(gMqttCfg.subTopic));
   pub.toCharArray(gMqttCfg.pubTopic, sizeof(gMqttCfg.pubTopic));
+  mqttEnabledFlag = enabled;
   gMqttCfg.enabled = enabled;
   return true;
 }
@@ -518,23 +542,6 @@ static void startWiFi()
   Serial.print("[WiFi] Access Point started. AP IP Address: ");
   Serial.println(WiFi.softAPIP());
 }
-static inline void wsFlushIfNeeded(WebSocketsServer &w, bool force = false)
-{
-  uint32_t now = millis();
-  if (force || gWsLen > (WS_BATCH_BYTES - 96) || (now - gWsLastFlush) >= WS_FLUSH_EVERY_MS)
-  {
-    if (gWsLen)
-    {
-      if (w.connectedClients() > 0)
-      {
-        w.broadcastTXT((const uint8_t *)gWsBuf, gWsLen);
-      }
-      gWsLen = 0;
-    }
-    gWsLastFlush = now;
-  }
-}
-
 void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
 {
   switch (type)
@@ -543,7 +550,6 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
     ws.sendTXT(num, "WebCAN ready (web-only).");
     if (eg)
       xEventGroupSetBits(eg, BIT_WS_HAS_CLIENT);
-    wsFlushIfNeeded(ws, true);
     break;
   case WStype_DISCONNECTED:
     if (ws.connectedClients() == 0 && eg)
@@ -601,6 +607,7 @@ static void setupHttp()
           {
     if (http.hasArg("ids")) {
       String idList = http.arg("ids");
+      portENTER_CRITICAL(&gBlockedMux);
       blockedIdCount = 0;
       int start = 0;
       while (start < idList.length() && blockedIdCount < 64) {
@@ -613,6 +620,7 @@ static void setupHttp()
         }
         start = comma + 1;
       }
+      portEXIT_CRITICAL(&gBlockedMux);
       http.send(200, "application/json", "{\"ok\":1}");
     } else {
       http.send(400, "application/json", "{\"ok\":0,\"err\":\"missing_ids\"}");
@@ -836,6 +844,9 @@ FrameLite f{};
 // =========================================================
 static bool reconfigure(uint16_t kbps)
 {
+  if (canMutex)
+    xSemaphoreTake(canMutex, portMAX_DELAY);
+
   ACAN2515Settings settings(QUARTZ_FREQUENCY, (unsigned)(kbps * 1000U));
   settings.mRequestedMode = ackMode ? ACAN2515Settings::NormalMode : ACAN2515Settings::ListenOnlyMode;
   settings.mTripleSampling = (kbps <= 125);
@@ -846,21 +857,27 @@ static bool reconfigure(uint16_t kbps)
   const uint16_t ec2 = can2.begin(settings, []
                                   { can2.isr(); });
 
+  bool ok = true;
   if (ec1 != 0 || ec2 != 0)
   {
     char msg[64];
     snprintf(msg, sizeof(msg), "ACAN config error (1: 0x%X, 2: 0x%X)", ec1, ec2);
     ws.broadcastTXT(msg);
     canReady = false;
-    return false;
+    ok = false;
+  }
+  else
+  {
+    canReady = true;
+    currentKbps = kbps;
+    char okMsg[64];
+    snprintf(okMsg, sizeof(okMsg), "Dual ACAN2515 initialized @ %u kbps (%s)", kbps, ackMode ? "NORMAL" : "LISTEN");
+    ws.broadcastTXT(okMsg);
   }
 
-  canReady = true;
-  currentKbps = kbps;
-  char ok[64];
-  snprintf(ok, sizeof(ok), "Dual ACAN2515 initialized @ %u kbps (%s)", kbps, ackMode ? "NORMAL" : "LISTEN");
-  ws.broadcastTXT(ok);
-  return true;
+  if (canMutex)
+    xSemaphoreGive(canMutex);
+  return ok;
 }
 
 // =========================================================
@@ -889,7 +906,7 @@ static void ledStatusTask(void *pv)
       ms = 1000;
       gap = 1000;
     }
-    else if (!mqtt.connected() && gMqttCfg.enabled)
+    else if (!mqttConnectedFlag && mqttEnabledFlag)
     {
       pulses = 2;
       ms = 150;
@@ -920,6 +937,9 @@ static void canTask(void *)
 
   for (;;)
   {
+    if (canMutex)
+      xSemaphoreTake(canMutex, portMAX_DELAY);
+
     // 1) Drain TX queue
     FrameLite txf;
     while (xQueueReceive(qTx, &txf, 0) == pdTRUE)
@@ -993,7 +1013,7 @@ static void canTask(void *)
         xQueueSend(qRx, &f, 0);
       }
 
-      if (gMqttCfg.enabled)
+      if (mqttEnabledFlag)
       {
         if (xQueueSend(qMqttTx, &f, 0) == pdTRUE)
         {
@@ -1062,7 +1082,7 @@ static void canTask(void *)
         xQueueSend(qRx, &f, 0);
       }
 
-      if (gMqttCfg.enabled)
+      if (mqttEnabledFlag)
       {
         if (xQueueSend(qMqttTx, &f, 0) == pdTRUE)
         {
@@ -1079,6 +1099,9 @@ static void canTask(void *)
       }
       drained++;
     }
+
+    if (canMutex)
+      xSemaphoreGive(canMutex);
 
     if (drained == 0)
       vTaskDelay(rxPollDelay);
@@ -1160,7 +1183,7 @@ static void netTask(void *)
     if (now - lastStatusUpdate >= 2000)
     {
       char statusBuf[64];
-      snprintf(statusBuf, sizeof(statusBuf), "{\"type\":\"status\",\"mqtt\":%d}", mqtt.connected() ? 1 : 0);
+      snprintf(statusBuf, sizeof(statusBuf), "{\"type\":\"status\",\"mqtt\":%d}", mqttConnectedFlag ? 1 : 0);
       if (ws.connectedClients() > 0)
       {
         ws.broadcastTXT(statusBuf);
@@ -1257,10 +1280,11 @@ static void mqttTask(void *pv)
   {
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    if (WiFi.status() == WL_CONNECTED && gMqttCfg.enabled)
+    if (WiFi.status() == WL_CONNECTED && mqttEnabledFlag)
     {
       if (!mqtt.connected())
       {
+        mqttConnectedFlag = false;
         Serial.println("[MQTTS] Attempting secure connection...");
 
         String clientId = "WebCan_" + String(ESP.getEfuseMac(), HEX);
@@ -1278,16 +1302,19 @@ static void mqttTask(void *pv)
         if (connected)
         {
           mqtt.subscribe(gMqttCfg.subTopic);
+          mqttConnectedFlag = true;
           Serial.println("[MQTTS] Connected & Encrypted");
         }
         else
         {
+          mqttConnectedFlag = false;
           Serial.printf("[MQTTS] Failed, state=%d\n", mqtt.state());
           vTaskDelay(pdMS_TO_TICKS(5000));
         }
       }
       else
       {
+        mqttConnectedFlag = true;
         mqtt.loop();
 
         FrameLite out;
@@ -1321,6 +1348,10 @@ static void mqttTask(void *pv)
         }
       }
     }
+    else
+    {
+      mqttConnectedFlag = false;
+    }
   }
 }
 
@@ -1330,6 +1361,13 @@ static void startRtosPipelines()
   qTx = xQueueCreate(128, sizeof(FrameLite));
   qMqttTx = xQueueCreate(128, sizeof(FrameLite));
   eg = xEventGroupCreate();
+
+  if (!qRx || !qTx || !qMqttTx || !eg || !canMutex)
+  {
+    Serial.println("[RTOS] FATAL: Failed to allocate queues/mutex. Restarting...");
+    delay(500);
+    ESP.restart();
+  }
 
   xTaskCreatePinnedToCore(canTask, "can", 4096, NULL, 20, NULL, 1);
   xTaskCreatePinnedToCore(netTask, "net", 6144, NULL, 18, NULL, 0);
@@ -1348,9 +1386,6 @@ void setup()
   pinMode(LED_BUILTIN, OUTPUT);
   led.begin();
   led.on();
-
-  loadApConfig();
-  loadStaConfig();
 
   if (loadMqttConfig())
   {
@@ -1371,16 +1406,20 @@ void setup()
   SPI.begin(MCP2515_SCK, MCP2515_MISO, MCP2515_MOSI);
   SPI.setFrequency(8000000);
   pinMode(MCP2515_1_INT, INPUT_PULLUP);
+  pinMode(MCP2515_2_INT, INPUT_PULLUP);
+
+  canMutex = xSemaphoreCreateMutex();
 
   ws.broadcastTXT("ESP32 + ACAN2515 Web Terminal (web-only)");
   reconfigure(currentKbps);
 
-  if (gMqttCfg.enabled && strlen(gMqttCfg.server) > 0)
+  if (mqttEnabledFlag && strlen(gMqttCfg.server) > 0)
   {
     setupSecureMQTT();
   }
 
-  // Initialize MCP23X17 (Make sure Wire.begin() is called before this if needed)
+  // Initialize MCP23X17 on I2C (relay control for termination resistor)
+  Wire.begin();
   if (!mcp.begin_I2C()) {
     Serial.println("Error initializing MCP23X17.");
   } else {

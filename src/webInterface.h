@@ -84,20 +84,41 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
 @media (max-width:900px){ .form-grid{ grid-template-columns:1fr; } }
 
-.card{ width:min(1100px,95vw); }
-.actions{ display:flex; justify-content:flex-end; margin-top:16px; }
-  .modal.open{display:flex}
-  .card{background:#0f172a; border:1px solid var(--border); border-radius:12px; width:min(900px,98vw); padding:16px; color:#e6edf3}
-  .card h3{margin:8px 0 12px 0}
- .grid{ display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start; }
+.modal.open{display:flex}
 
+.card{background:#0f172a; border:1px solid var(--border); border-radius:12px; width:min(900px,98vw); padding:16px; color:#e6edf3}
+.card h3{margin:8px 0 12px 0}
+
+.grid{ display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start; }
 .grid-full{ grid-column:1 / -1; }
-  .row{display:flex; gap:8px; align-items:center}
-  .row label{width:90px; font-size:12px; color:#aab3c2}
-  .actions{display:flex; gap:8px; justify-content:flex-end; margin-top:12px}
-  .badge{font-size:12px; color:#aab3c2}
-  .sep{height:1px; background:#192030; margin:12px 0}
-  .help{font-size:12px; color:#94a3b8}
+
+.row{display:flex; gap:8px; align-items:center}
+.row label{width:90px; font-size:12px; color:#aab3c2}
+
+.actions{display:flex; gap:8px; justify-content:flex-end; margin-top:12px}
+.badge{font-size:12px; color:#aab3c2}
+.sep{height:1px; background:#192030; margin:12px 0}
+.help{font-size:12px; color:#94a3b8}
+
+/* Foldable settings groups */
+.set-list{ display:flex; flex-direction:column; gap:10px; }
+.set-group{ border:1px solid var(--border); border-radius:8px; overflow:hidden; background:#0b1220; }
+.set-group-head{ display:flex; align-items:center; gap:8px; width:100%; padding:10px 12px; background:#111827; color:#e6edf3; font-size:13px; font-weight:600; cursor:pointer; user-select:none; border:none; border-radius:0; text-align:left; }
+.set-group-head:hover{ background:#1a2332; }
+.set-group-head .chev{ margin-left:auto; color:#94a3b8; transition:transform .15s ease; }
+.set-group.closed .chev{ transform:rotate(-90deg); }
+.set-group-body{ padding:12px; display:flex; flex-direction:column; gap:10px; }
+.set-group.closed .set-group-body{ display:none; }
+.set-group .actions{ margin-top:0; }
+
+/* Foldable control-bar groups */
+.ctrl-group{ display:flex; align-items:stretch; border:1px solid var(--border); border-radius:8px; background:#0f172a; overflow:hidden; }
+.ctrl-group-head{ display:flex; align-items:center; gap:6px; padding:8px 10px; background:#111827; color:#cbd5e1; font-size:12px; font-weight:600; cursor:pointer; user-select:none; border:none; border-radius:0; text-align:left; white-space:nowrap; }
+.ctrl-group-head:hover{ background:#1a2332; }
+.ctrl-group-head .chev{ color:#94a3b8; transition:transform .15s ease; }
+.ctrl-group.closed .chev{ transform:rotate(-90deg); }
+.ctrl-group-body{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 10px; }
+.ctrl-group.closed .ctrl-group-body{ display:none; }
 
   #toast{position:fixed; right:12px; bottom:12px; background:#0b1220; border:1px solid var(--border); color:#e6edf3; padding:10px 12px; border-radius:8px; display:none}
 </style></head>
@@ -133,56 +154,71 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
   <main>
     <div id="controls">
-      <div class="group" id="rates">
-        <span class="label">Bitrate:</span>
-        <button onclick="applyBitrate(10)">10</button>
-        <button onclick="applyBitrate(20)">20</button>
-        <button onclick="applyBitrate(50)">50</button>
-        <button onclick="applyBitrate(100)">100</button>
-        <button onclick="applyBitrate(125)">125</button>
-        <button onclick="applyBitrate(250)">250</button>
-        <button onclick="applyBitrate(500)">500</button>
-        <button onclick="applyBitrate(800)">800</button>
-        <button onclick="applyBitrate(1000)">1000</button>
+      <div class="ctrl-group" data-group="bitrate">
+        <button class="ctrl-group-head" type="button"><span>Bitrate</span><span class="chev">▾</span></button>
+        <div class="ctrl-group-body" id="rates">
+          <button onclick="applyBitrate(10)">10</button>
+          <button onclick="applyBitrate(20)">20</button>
+          <button onclick="applyBitrate(50)">50</button>
+          <button onclick="applyBitrate(100)">100</button>
+          <button onclick="applyBitrate(125)">125</button>
+          <button onclick="applyBitrate(250)">250</button>
+          <button onclick="applyBitrate(500)">500</button>
+          <button onclick="applyBitrate(800)">800</button>
+          <button onclick="applyBitrate(1000)">1000</button>
+        </div>
       </div>
 
-<div class="group" id="ackgrp" style="margin-left:12px">
-        <span class="label">Mode:</span>
-        <button class="ack" id="ack-on"  onclick="openNormal()">Open</button>
-        <button class="ack" id="ack-off" onclick="openListen()">Listen</button>
-        <button onclick="closeCan()">Close</button>
-        <span class="label" style="margin-left:8px">Routing:</span>
-        <button id="bridgeBtn" onclick="toggleBridge()">Bridge: ON</button>
-        <button id="termBtn" onclick="toggleTermResistor()" style="outline: 2px solid var(--danger);">120Ω: OFF</button>
+      <div class="ctrl-group" data-group="mode">
+        <button class="ctrl-group-head" type="button"><span>Mode / Routing</span><span class="chev">▾</span></button>
+        <div class="ctrl-group-body" id="ackgrp">
+          <button class="ack" id="ack-on"  onclick="openNormal()">Open</button>
+          <button class="ack" id="ack-off" onclick="openListen()">Listen</button>
+          <button onclick="closeCan()">Close</button>
+          <span class="label" style="margin-left:4px">Bridge</span>
+          <button id="bridgeBtn" onclick="toggleBridge()">Bridge: ON</button>
+          <button id="termBtn" onclick="toggleTermResistor()" style="outline: 2px solid var(--danger);">120Ω: OFF</button>
+        </div>
       </div>
 
-      <div class="group" id="overridegrp" style="margin-left:12px">
-        <span class="label">Terminal:</span>
-        <button id="overrideBtn" title="When ON, each ID shows a single updating row">Override: OFF</button>
+      <div class="ctrl-group" data-group="terminal">
+        <button class="ctrl-group-head" type="button"><span>Terminal</span><span class="chev">▾</span></button>
+        <div class="ctrl-group-body" id="overridegrp">
+          <button id="overrideBtn" title="When ON, each ID shows a single updating row">Override: OFF</button>
+          <span class="label">Mark ≤</span>
+          <input id="markChangeMs" type="number" min="0" step="100" value="0" title="Highlight a changed value only when it updates within this many ms (0 = always mark)" style="width:72px; padding:6px 8px; background:#0b1220; color:#e6edf3; border:1px solid var(--border); border-radius:6px; outline:none">
+          <span class="label">ms</span>
+        </div>
       </div>
 
-<div class="group" id="manipgrp" style="margin-left:12px; padding-left:12px; border-left:1px solid var(--border);">
-        <select id="m_action" style="padding:6px; background:#0b1220; color:#e6edf3; border:1px solid var(--border); border-radius:4px; outline:none; font-size:12px;">
-          <option value="single">Set Byte</option>
-          <option value="zero">Zero Payload</option>
-        </select>
-        <span class="label">If B[0]=</span>
-        <input id="m_filter" type="text" style="width:36px; padding:4px;" value="21" placeholder="Hex" maxlength="2">
-        <span class="label">-> [</span>
-        <input id="m_idx" type="text" style="width:30px; padding:4px;" min="0" max="7" value="4">
-        <span class="label">]=</span>
-        <input id="m_val" type="text" style="width:36px; padding:4px;" value="00" placeholder="Hex" maxlength="2">
-        <button id="manipBtn" onclick="toggleManip()">Enable Rule</button>
+      <div class="ctrl-group" data-group="manip">
+        <button class="ctrl-group-head" type="button"><span>Manipulation</span><span class="chev">▾</span></button>
+        <div class="ctrl-group-body" id="manipgrp">
+          <select id="m_action" style="padding:6px; background:#0b1220; color:#e6edf3; border:1px solid var(--border); border-radius:4px; outline:none; font-size:12px;">
+            <option value="single">Set Byte</option>
+            <option value="zero">Zero Payload</option>
+          </select>
+          <span class="label">If B[0]=</span>
+          <input id="m_filter" type="text" style="width:36px; padding:4px;" value="21" placeholder="Hex" maxlength="2">
+          <span class="label">-> [</span>
+          <input id="m_idx" type="text" style="width:30px; padding:4px;" min="0" max="7" value="4">
+          <span class="label">]=</span>
+          <input id="m_val" type="text" style="width:36px; padding:4px;" value="00" placeholder="Hex" maxlength="2">
+          <button id="manipBtn" onclick="toggleManip()">Enable Rule</button>
+        </div>
       </div>
 
-      <div class="group" id="filegrp" style="margin-left:auto">
-        <span class="label">Filename:</span>
-        <input id="logName" type="text" placeholder="trip_2025_10_15.csv" spellcheck="false">
-        <button id="startBtn" onclick="startLogging()" disabled>Start logging</button>
-        <button id="stopBtn"  onclick="stopLogging()" disabled>Stop logging</button>
-        <button id="downloadBtn" title="Download current CSV">Download CSV</button>
-        <button id="uploadBtn" title="Upload current CSV to server">Upload to Server</button>
-        <button onclick="clearTerm()">Clear</button>
+      <div class="ctrl-group" data-group="logging">
+        <button class="ctrl-group-head" type="button"><span>CAN Logging</span><span class="chev">▾</span></button>
+        <div class="ctrl-group-body" id="filegrp">
+          <span class="label">Filename:</span>
+          <input id="logName" type="text" placeholder="trip_2025_10_15.csv" spellcheck="false">
+          <button id="startBtn" onclick="startLogging()" disabled>Start logging</button>
+          <button id="stopBtn"  onclick="stopLogging()" disabled>Stop logging</button>
+          <button id="downloadBtn" title="Download current CSV">Download CSV</button>
+          <button id="uploadBtn" title="Upload current CSV to server">Upload to Server</button>
+          <button onclick="clearTerm()">Clear</button>
+        </div>
       </div>
     </div>
 
@@ -222,45 +258,61 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     <div style="display:flex; align-items:center; gap:10px">
       <h3 style="margin:0">Settings</h3>
       <span class="badge" id="netBadge"></span>
-      <div style="margin-left:auto"><button id="closeSettings">Close</button></div>
-    </div> 
+      <div style="margin-left:auto; display:flex; gap:8px">
+        <button id="expandAllSettings" type="button">Expand all</button>
+        <button id="collapseAllSettings" type="button">Collapse all</button>
+        <button id="closeSettings">Close</button>
+      </div>
+    </div>
     <div class="sep"></div>
-    <div class="grid">
-      <section>
-        <h4 style="margin:4px 0 8px 0">Access Point</h4>
-        <div class="row"><label>SSID</label><input id="ap_ssid" type="text" maxlength="32"></div>
-        <div class="row"><label>Password</label><input id="ap_pass" type="password" maxlength="64" placeholder="min 8 chars"></div>
-        <div class="actions">
-        <button id="saveAp">Save AP</button>
-        </div>
-        <div class="help">Used when device runs its own Wi-Fi network.</div>
-      </section>
 
-      <section>
-        <h4 style="margin:4px 0 8px 0">Wi-Fi STA (Client)</h4>
-        <div class="row"><label>Enable</label><input id="sta_enabled" type="checkbox"></div>
-        <div class="row"><label>SSID</label><input id="sta_ssid" type="text" maxlength="32" placeholder="leave blank to disable"></div>
-        <div class="row"><label>Password</label><input id="sta_pass" type="password" maxlength="64"></div>
-        <div class="actions">
-          <button id="saveSta">Save STA</button>
+    <div class="set-list">
+      <div class="set-group" data-group="ap">
+        <button class="set-group-head" type="button">
+          <span>Access Point</span>
+          <span class="chev">▾</span>
+        </button>
+        <div class="set-group-body">
+          <div class="row"><label>SSID</label><input id="ap_ssid" type="text" maxlength="32"></div>
+          <div class="row"><label>Password</label><input id="ap_pass" type="password" maxlength="64" placeholder="min 8 chars"></div>
+          <div class="actions"><button id="saveAp">Save AP</button></div>
+          <div class="help">Used when device runs its own Wi-Fi network.</div>
         </div>
-        <div class="help">On next boot, device tries to join your Wi-Fi if enabled + SSID set.</div>
-      </section>
+      </div>
 
-<section class="grid-full">
-  <h4 style="margin:4px 0 12px 0">MQTT Broker</h4>
-  <div class="form-grid">
-    <label>Enable</label><input id="mqtt_enabled" type="checkbox">
-    <label>Server/IP</label><input id="mqtt_server" type="text">
-    <label>Port</label><input id="mqtt_port" type="number">
-    <label>Username</label><input id="mqtt_user" type="text">
-    <label>Password</label><input id="mqtt_pass" type="password">
-    <label>Sub Topic</label><input id="mqtt_subTopic" type="text">
-    <label>Pub Topic</label><input id="mqtt_pubTopic" type="text">
-  </div>
-  <div class="actions"><button id="saveMqtt">Save MQTT</button></div>
-  <div class="help">Connects to broker via Wi-Fi STA to bridge CAN frames.</div>
-</section>
+      <div class="set-group" data-group="sta">
+        <button class="set-group-head" type="button">
+          <span>Wi-Fi STA (Client)</span>
+          <span class="chev">▾</span>
+        </button>
+        <div class="set-group-body">
+          <div class="row"><label>Enable</label><input id="sta_enabled" type="checkbox"></div>
+          <div class="row"><label>SSID</label><input id="sta_ssid" type="text" maxlength="32" placeholder="leave blank to disable"></div>
+          <div class="row"><label>Password</label><input id="sta_pass" type="password" maxlength="64"></div>
+          <div class="actions"><button id="saveSta">Save STA</button></div>
+          <div class="help">On next boot, device tries to join your Wi-Fi if enabled + SSID set.</div>
+        </div>
+      </div>
+
+      <div class="set-group" data-group="mqtt">
+        <button class="set-group-head" type="button">
+          <span>MQTT Broker</span>
+          <span class="chev">▾</span>
+        </button>
+        <div class="set-group-body">
+          <div class="form-grid">
+            <label>Enable</label><input id="mqtt_enabled" type="checkbox">
+            <label>Server/IP</label><input id="mqtt_server" type="text">
+            <label>Port</label><input id="mqtt_port" type="number">
+            <label>Username</label><input id="mqtt_user" type="text">
+            <label>Password</label><input id="mqtt_pass" type="password">
+            <label>Sub Topic</label><input id="mqtt_subTopic" type="text">
+            <label>Pub Topic</label><input id="mqtt_pubTopic" type="text">
+          </div>
+          <div class="actions"><button id="saveMqtt">Save MQTT</button></div>
+          <div class="help">Connects to broker via Wi-Fi STA to bridge CAN frames.</div>
+        </div>
+      </div>
     </div>
 
     <div class="sep"></div>
@@ -302,44 +354,49 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 </div>
 
 <div class="modal" id="sequencerModal" aria-hidden="true">
-  <div class="card" style="max-width:860px">
+  <div class="card" style="max-width:720px">
     <div style="display:flex; align-items:center; gap:10px">
       <h3 style="margin:0; color:var(--accent)">CSV Sequencer</h3>
       <div style="margin-left:auto"><button id="closeSequencer">Close</button></div>
     </div>
     <div class="sep"></div>
-    <div class="grid">
-      <section>
-        <div class="row">
-          <label>CSV File</label>
-          <input type="file" id="seqFile" accept=".csv" style="width:100%">
-        </div>
-        <div class="row" style="margin-top:10px">
-          <label>Delay (ms)</label>
-          <input type="number" id="seqDelay" value="50" min="10" style="width:80px">
-        </div>
-        <div class="row" style="margin-top:10px">
-          <label>IDs to send</label>
-          <span id="seqIdCount" style="font-size:12px; color:var(--muted)">0 selected</span>
-        </div>
-        <div class="sidebtns" style="margin-top:8px">
-          <button id="seqSelectAllBtn" type="button">Select all</button>
-          <button id="seqSelectNoneBtn" type="button">None</button>
-        </div>
-        <div id="seqIdList" style="max-height:220px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:4px 6px; margin-top:8px; background:#0b1220;">
-          <div style="font-size:12px; color:#aab3c2; padding:4px">Upload a CSV to see IDs.</div>
-        </div>
-      </section>
-      <section style="display:flex; flex-direction:column; justify-content:center; gap:10px">
-        <div id="seqStatus" style="font-size:12px; color:var(--muted); text-align:center; min-height:20px">No file loaded</div>
-        <div style="display:flex; gap:5px">
-          <button id="startSeqBtn" class="ok" disabled style="flex:1">Start Sequence</button>
-          <button id="stopSeqBtn" class="bad" disabled style="flex:1">Stop</button>
-        </div>
-      </section>
+
+    <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap">
+      <div class="row" style="flex:1">
+        <label>CSV File</label>
+        <input type="file" id="seqFile" accept=".csv" style="flex:1; min-width:180px">
+      </div>
+      <div class="row">
+        <label>Delay (ms)</label>
+        <input type="number" id="seqDelay" value="50" min="10" style="width:80px">
+      </div>
     </div>
+
     <div class="sep"></div>
-    <div class="help">
+
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
+      <span style="font-size:13px; font-weight:600; color:var(--ink)">IDs to send</span>
+      <span id="seqIdCount" style="font-size:12px; color:var(--muted)">0 selected</span>
+      <div style="margin-left:auto; display:flex; gap:6px">
+        <button id="seqSelectAllBtn" type="button">Select all</button>
+        <button id="seqSelectNoneBtn" type="button">None</button>
+      </div>
+    </div>
+    <div id="seqIdList" style="max-height:260px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:4px 6px; background:#0b1220;">
+      <div style="font-size:12px; color:#aab3c2; padding:4px">Upload a CSV to see IDs.</div>
+    </div>
+
+    <div class="sep"></div>
+
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+      <div id="seqStatus" style="font-size:12px; color:var(--muted); flex:1; min-width:140px">No file loaded</div>
+      <div style="display:flex; gap:6px">
+        <button id="startSeqBtn" class="ok" disabled>Start Sequence</button>
+        <button id="stopSeqBtn" class="bad" disabled>Stop</button>
+      </div>
+    </div>
+
+    <div class="help" style="margin-top:10px">
       Upload savvycan CSV files. Will parse ID, EXT, LEN, DATA and send one by one.
       Only frames whose CAN ID is selected above are sent.
     </div>
@@ -665,7 +722,20 @@ refreshDatalists();
 // Override mode
 let overrideMode = false;
 const overrideBtn = document.getElementById('overrideBtn');
-const rowMap = new Map(); 
+const rowMap = new Map();
+const lastChangeMap = new Map(); // key -> last update timestamp (ms)
+const markChangeMsInput = document.getElementById('markChangeMs');
+const LS_KEY_MARK_MS = 'webcan_mark_change_ms_v1';
+let markChangeMs = 0;
+try { markChangeMs = Math.max(0, parseInt(localStorage.getItem(LS_KEY_MARK_MS) || '0', 10) || 0); } catch(_) { markChangeMs = 0; }
+markChangeMsInput.value = markChangeMs;
+
+markChangeMsInput.addEventListener('change', ()=>{
+  markChangeMs = Math.max(0, parseInt(markChangeMsInput.value, 10) || 0);
+  markChangeMsInput.value = markChangeMs;
+  try { localStorage.setItem(LS_KEY_MARK_MS, String(markChangeMs)); } catch(_) {}
+  showToast('Mark change threshold: ' + (markChangeMs > 0 ? markChangeMs + ' ms' : 'always'));
+});
 
 overrideBtn.addEventListener('click', ()=>{
   overrideMode = !overrideMode;
@@ -797,8 +867,16 @@ function upsertFrameRowBatched(obj, frag){
   } else if (tr._lastHtml !== html) {
     tr.innerHTML = html; tr._lastHtml = html;
   }
-  tr.style.outline = '2px solid #3b82f6';
-  setTimeout(()=>{ tr.style.outline = ''; }, 100);
+
+  // Highlight only when the value is changing faster than the threshold
+  const now = Date.now();
+  const prev = lastChangeMap.get(key) || 0;
+  lastChangeMap.set(key, now);
+  const fast = (prev === 0) || (markChangeMs <= 0) || ((now - prev) <= markChangeMs);
+  if (fast) {
+    tr.style.outline = '2px solid #3b82f6';
+    setTimeout(()=>{ tr.style.outline = ''; }, 100);
+  }
 }
 
 function pruneOldRows(){
@@ -808,7 +886,7 @@ function pruneOldRows(){
       const r = frameBody.firstChild;
       if (!r) break;
       const key = r && r.dataset ? r.dataset.key : null;
-      if (key) rowMap.delete(key);
+      if (key) { rowMap.delete(key); lastChangeMap.delete(key); }
       frameBody.removeChild(r);
     }
   }
@@ -1066,7 +1144,7 @@ document.addEventListener('visibilitychange', ()=>{
   }
 });
 
-function clearTerm(){ frameBody.innerHTML=''; frameCounter=0; rowMap.clear(); }
+function clearTerm(){ frameBody.innerHTML=''; frameCounter=0; rowMap.clear(); lastChangeMap.clear(); }
 function setAck(on){
   const onBtn=document.getElementById('ack-on'); const offBtn=document.getElementById('ack-off');
   onBtn.classList.toggle('on',!!on); offBtn.classList.toggle('off',!on);
@@ -1277,6 +1355,52 @@ settingsBtn.addEventListener('click', openSettings);
 closeSettings.addEventListener('click', closeSettingsModal);
 settingsModal.addEventListener('click', (e)=>{ if(e.target===settingsModal) closeSettingsModal(); });
 
+// Foldable group state persistence
+const LS_KEY_FOLD = 'webcan_fold_state_v1';
+let foldState = {};
+try { foldState = JSON.parse(localStorage.getItem(LS_KEY_FOLD) || '{}'); } catch(_) { foldState = {}; }
+
+function foldKeyOf(el){
+  return (el.classList.contains('set-group') ? 'set:' : 'ctrl:') + (el.dataset.group || '');
+}
+function persistFoldState(){
+  try { localStorage.setItem(LS_KEY_FOLD, JSON.stringify(foldState)); } catch(_) {}
+}
+function setGroupClosed(g, closed){
+  g.classList.toggle('closed', closed);
+  foldState[foldKeyOf(g)] = closed;
+  persistFoldState();
+}
+function initFoldState(scopeSelector){
+  document.querySelectorAll(scopeSelector + ' [data-group]').forEach((g)=>{
+    const closed = foldState[foldKeyOf(g)] === true;
+    g.classList.toggle('closed', closed);
+  });
+}
+
+// Foldable settings groups
+function setAllSettingsOpen(open){
+  document.querySelectorAll('.set-group').forEach((g)=> setGroupClosed(g, !open));
+}
+initFoldState('.set-list');
+document.querySelectorAll('.set-group-head').forEach((head)=>{
+  head.addEventListener('click', ()=>{
+    const g = head.closest('.set-group');
+    setGroupClosed(g, !g.classList.contains('closed'));
+  });
+});
+document.getElementById('expandAllSettings').addEventListener('click', ()=> setAllSettingsOpen(true));
+document.getElementById('collapseAllSettings').addEventListener('click', ()=> setAllSettingsOpen(false));
+
+// Foldable control-bar groups
+initFoldState('#controls');
+document.querySelectorAll('.ctrl-group-head').forEach((head)=>{
+  head.addEventListener('click', ()=>{
+    const g = head.closest('.ctrl-group');
+    setGroupClosed(g, !g.classList.contains('closed'));
+  });
+});
+
 async function loadSettings(){
   try{
     const [apRes, staRes, mqttRes] = await Promise.all([ fetch('/api/apcfg'), fetch('/api/stacfg'), fetch('/api/mqttcfg') ]);
@@ -1406,31 +1530,63 @@ seqFile.addEventListener('change', ()=>{
 
 startSeqBtn.addEventListener('click', async ()=>{
   if(!seqFrames.length) return;
-  const selected = [];
-  for (const f of seqFrames) {
-    const key = (f.ext ? 'E' : 'S') + '|' + f.id;
-    const rec = seqIdMap.get(key);
-    if (rec && rec.checked) selected.push(f);
-  }
-  if (!selected.length) {
+  const selectedCount = seqFrames.filter((f)=>{
+    const rec = seqIdMap.get((f.ext ? 'E' : 'S') + '|' + f.id);
+    return rec && rec.checked;
+  }).length;
+  if (!selectedCount) {
     seqStatus.innerText = 'No selected IDs to send.';
     return;
   }
   seqRunning = true; startSeqBtn.disabled = true; stopSeqBtn.disabled = false;
   const delay = parseInt(seqDelay.value) || 50;
   let sent = 0;
-  for(let i=0; i<selected.length; i++){
+  let needDelay = false;
+  for(let i=0; i<seqFrames.length; i++){
     if(!seqRunning) break;
-    const f = selected[i];
-    seqStatus.innerText = `Sending ${i+1}/${selected.length}: ID ${f.id}`;
+    const f = seqFrames[i];
+    const key = (f.ext ? 'E' : 'S') + '|' + f.id;
+    const rec = seqIdMap.get(key);
+    if (!rec || !rec.checked) continue; // unselected: no send, no wait
+
+    // Wait only between selected sends (never after skipped frames or the last one)
+    if (needDelay) await new Promise(r => setTimeout(r, delay));
+    needDelay = true;
+
+    seqStatus.innerText = `Sending ${sent+1}/${selectedCount}: ID ${f.id}`;
     try {
-        await fetch('/api/can/send', { method:'POST', body: new URLSearchParams({ id: f.id, ext: f.ext?'1':'0', rtr: '0', data: f.data, dlc: f.dlc }) });
-        sent++;
+        const res = await fetch('/api/can/send', { method:'POST', body: new URLSearchParams({ id: f.id, ext: f.ext?'1':'0', rtr: '0', data: f.data, dlc: f.dlc }) });
+        const j = await res.json();
+        if (j.ok) {
+          sent++;
+
+          // Render the sent frame in the terminal like any other TX frame
+          const bytes = parseDataBytesFlexible(f.data) || [];
+          const rowBytes = Array.from({length:8}, (_,k)=> bytes[k] ? bytes[k].toUpperCase().padStart(2,'0') : '');
+          const idDisp = '0x' + f.id;
+          incrementIdCountBatched(idDisp, 0); // TX bus = 0 (updates sidebar)
+
+          const rowObj = {
+            index: ++frameCounter,
+            timePretty: fmtTime(),
+            busNum: 0,
+            idDisp: idDisp,
+            ext: !!f.ext,
+            rtr: false,
+            dlc: f.dlc,
+            bytes: rowBytes
+          };
+          const fragTx = document.createDocumentFragment();
+          if (overrideMode) upsertFrameRowBatched(rowObj, fragTx); else appendFrameRowBatched(rowObj, fragTx);
+          frameBody.appendChild(fragTx);
+          pruneOldRows(); scrollBottom();
+
+          logTxFrame(f.id, !!f.ext, f.dlc, bytes, 0);
+        }
     } catch(err){}
-    await new Promise(r => setTimeout(r, delay));
   }
   seqRunning = false; startSeqBtn.disabled = false; stopSeqBtn.disabled = true;
-  seqStatus.innerText = `Finished: ${sent}/${selected.length} sent.`;
+  seqStatus.innerText = `Finished: ${sent}/${selectedCount} sent.`;
 });
 
 stopSeqBtn.addEventListener('click', ()=>{ seqRunning = false; seqStatus.innerText = "Stopped by user."; });
